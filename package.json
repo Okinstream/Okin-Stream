@@ -1,0 +1,8 @@
+{
+  "name": "okin-stream",
+  "version": "1.0.0",
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "nodemailer": "^6.9.0"
+  }
+}

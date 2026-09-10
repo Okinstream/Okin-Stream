@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark">
+<head>
+  <meta name="monetag" content="4dc22d81fc648a226b4fcb3404d63d00">
+<meta charset="UTF-8">                                                                                                <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<!-- ── SÉCURITÉ ─────────────────────────────────────────────── -->
+<!-- Content Security Policy : bloque tout ce qui n'est pas explicitement autorisé -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src  'self' 'unsafe-inline'
+              https://cdn.jsdelivr.net
+              https://www.gstatic.com
+              https://apis.google.com
+              https://accounts.google.com;
+  style-src   'self' 'unsafe-inline'
+              https://fonts.googleapis.com;
+  font-src    'self'
+              https://fonts.gstatic.com;
+  img-src     'self' data: blob:
+              https://crests.football-data.org                                                                                      https://*.googleapis.com
+              https://*.ytimg.com
+              https://*.gstatic.com
+              https://i.ytimg.com
+              https://footmercato.net
+              https://*.footmercato.net
+              https://*.lequipe.fr
+              https://*.rmcsport.bfmtv.com
+              https://*.francetvinfo.fr;
+  connect-src 'self'                                                                                                                                                  https://*.firebaseio.com                                                                                                                                https://firebaseinstallations.googleapis.com
+              https://okin-stream-765b2-default-rtdb.firebaseio.com
+              wss://okin-stream-765b2-default-rtdb.firebaseio.com
+              https://api.rss2json.com
+              https://corsproxy.io
+              https://api.allorigins.win
+              https://corsproxy.org
+              https://www.googleapis.com
+              https://crests.football-data.org                                                                                      https://identitytoolkit.googleapis.com
+              https://securetoken.googleapis.com
+              https://accounts.google.com
+              https://oauth2.googleapis.com;
+  media-src   'self' blob: https: http:;
+  frame-src   https://www.youtube.com https://www.youtube-nocookie.com
+              https://accounts.google.com
+              https://okin-stream-765b2.firebaseapp.com;
+  object-src  'none';
+  base-uri    'self';
+  form-action 'none';
+">
+<!-- Empêche le clickjacking -->                                                                                                                        <meta http-equiv="X-Frame-Options" content="DENY">
+<!-- Empêche le sniffing de type MIME -->
+<meta http-equiv="X-Content-Type-Options" content="nosniff">                                                                                            <!-- Referrer minimal -->
+<meta name="referrer" content="strict-origin-when-cross-origin">                                                                                        <!-- ── FIN SÉCURITÉ ──────────────────────────────────────────── -->
+<meta name="theme-color" content="#060608">
+<meta name="apple-mobile-web-app-capable" content="yes">                                                                                                <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>OKIN STREAM</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800;900&family=Barlow+Condensed:wght@600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">                                                                                                                <link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+</head>
+<body>                                                                                                                                                  <div class="app" id="app">
+  <nav class="nav">
+    <div class="nav-logo"><img src="/ball.png" width="22" height="22" style="object-fit:contain;display:block" alt="">OKIN STREAM</div>
+    <div style="display:flex;gap:6px">
+      <button class="nav-btn" id="btn-settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="16" height="16"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>                                                                                                                             </button>                                                                                                                                               <button class="nav-btn" id="btn-search">                                                                                                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" width="16" height="16"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </button>
+    </div>
+  </nav>
+  <div class="ticker-wrap"><div class="ticker" id="ticker"><span class="t-item t-idle">CHARGEMENT…</span></div></div>
+  <div class="scroll" id="scroll"><div id="content"></div></div>
+  <div class="bar">
+    <div class="bi on" data-pg="dashboard">
+      <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="20" height="20"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      <span class="bi-lbl">Accueil</span>
+    </div>
+    <div class="bi" data-pg="home">
+      <svg class="bi-ico" viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      <span class="bi-lbl">Live</span>
+    </div>
+    <div class="bi" data-pg="schedule">
+      <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="20" height="20"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <span class="bi-lbl">Programme</span>
+    </div>
+    <div class="bi" data-pg="favorites">
+      <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="20" height="20"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      <span class="bi-lbl">Favoris</span>
+    </div>
+    <div class="bi" data-pg="account">
+      <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="20" height="20"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      <span class="bi-lbl">Compte</span>
+    </div>                                                                                                                                                </div>
+</div>
+
+<!-- LECTEUR SINGLE -->                                                                                                                                 <div class="vp-ov" id="modal">
+  <div class="vp-stage" id="vp-stage">
+    <video id="main-vid" playsinline preload="none"></video>
+    <div class="vp-fallback" id="vp-fallback">
+      <div class="vp-fb-noise"></div>
+      <div class="vp-fb-body">                                                                                                                                  <div class="vp-fb-teams">
+          <div class="vp-fb-team"><div class="crest crest-md" id="fb-c1"></div><span id="fb-home">—</span></div>
+          <div class="vp-fb-vs"><span class="vp-fb-score" id="fb-score">—</span><span class="vp-fb-min" id="fb-min">—</span></div>
+          <div class="vp-fb-team"><div class="crest crest-md" id="fb-c2"></div><span id="fb-away">—</span></div>
+        </div>
+        <div class="vp-fb-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="11" height="11"><path d="M18.364 5.636a9 9 0 1 1-12.728 0"/><line x1="12" y1="3" x2="12" y2="13"/></svg>PAS DE FLUX DISPONIBLE</div>
+      </div>
+    </div>
+    <div class="vp-tap" id="vp-tap"></div>
+    <div class="vp-flash" id="vp-flash"><div class="vp-flash-ring"></div><svg id="vp-flash-ico" viewBox="0 0 24 24" fill="currentColor" width="26" height="26"><path d="M8 5v14l11-7z"/></svg></div>
+    <div class="vp-hud" id="vp-hud">
+      <div class="vp-hud-side"><div class="crest crest-sm" id="hud-c1"></div><span id="hud-n1">—</span></div>
+      <div class="vp-hud-mid"><span class="vp-hud-score" id="hud-sc">—</span><span class="vp-hud-min" id="hud-min">—</span></div>
+      <div class="vp-hud-side vp-hud-r"><span id="hud-n2">—</span><div class="crest crest-sm" id="hud-c2"></div></div>
+    </div>
+    <div class="vp-ctrls" id="vp-ctrls">
+      <div class="vp-ctrls-inner">
+        <div class="vp-prog" id="vp-prog">
+          <span class="vp-tl" id="vp-tl">LIVE</span>
+          <div class="vp-track" id="vp-track"><div class="vp-track-bg"></div><div class="vp-track-fill" id="vp-fill"></div><div class="vp-track-dot" id="vp-dot"></div></div>
+          <span class="vp-tr" id="vp-tr"></span>
+        </div>
+        <div class="vp-btns">
+          <button class="vp-btn vp-btn-lg" id="vp-play">
+            <svg id="ico-pause" viewBox="0 0 24 24" fill="currentColor" width="26" height="26"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+            <svg id="ico-play" viewBox="0 0 24 24" fill="currentColor" width="26" height="26" style="display:none"><path d="M8 5v14l11-7z"/></svg>
+          </button>
+          <button class="vp-btn" id="vp-mute">
+            <svg id="ico-vol" viewBox="0 0 24 24" fill="currentColor" width="19" height="19"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+            <svg id="ico-mute" viewBox="0 0 24 24" fill="currentColor" width="19" height="19" style="display:none"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
+          </button>
+          <div style="flex:1"></div>
+          <button class="vp-btn" id="vp-cast" title="Caster sur TV">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm18-7H5c-1.1 0-2 .9-2 2v3h2v-3h14v10h-5v2h5c1.1 0 2-.9 2-2V9c0-1.1-.9-2-2-2zM1 10v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11z"/></svg>
+          </button>
+          <button class="vp-btn" id="vp-add-multi" title="Regarder en multi">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M2 4h9v9H2zm11 0h9v9h-9zM2 15h9v9H2zm11 0h9v9h-9z"/></svg>
+          </button>
+          <button class="vp-btn" id="vp-pip">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 7h-8v6h8V7zm2-4H3C1.9 3 1 3.9 1 5v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/></svg>
+          </button>
+          <button class="vp-btn" id="vp-fs">
+            <svg id="ico-fs" viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+            <svg id="ico-xfs" viewBox="0 0 24 24" fill="currentColor" width="18" height="18" style="display:none"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
+          </button>
+        </div>
+        <!-- Sélecteur de sources -->
+        <div id="vp-sources" class="vp-sources" style="display:none"></div>
+      </div>
+    </div>
+    <button class="vp-close" id="vp-close"><svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+  </div>
+  <div class="vp-panel">
+    <div class="vp-panel-top">
+      <!-- Header match -->
+      <div class="vp-panel-head">
+        <div class="vp-panel-match">
+          <div class="vp-comp" id="mi-league">—</div>
+          <div class="vp-title" id="mi-title">—</div>
+          <div class="vp-sub" id="mi-sub">—</div>
+        </div>
+        <button class="vp-panel-x" id="mi-close"><svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+      </div>
+      <!-- Actions -->
+      <div class="vp-panel-actions">
+        <button class="vp-act-btn" id="mi-fav">
+          <svg id="ico-fav-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          <svg id="ico-fav-in" viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style="display:none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          <span id="fav-label">Sauvegarder</span>
+        </button>
+        <button class="vp-act-btn" id="mi-share">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Partager
+        </button>
+      </div>
+      <!-- Événements buts -->
+      <div id="modal-evs"></div>
+      <!-- RÉSUMÉ YOUTUBE -->
+      <div id="yt-section" style="display:none">
+        <div class="yt-section-head">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="color:#ff0000"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+          <span class="yt-section-title">Résumé du match</span>
+        </div>
+        <div id="yt-loading" class="yt-loading" style="display:none"><div class="spinner"></div></div>
+        <div id="yt-results"></div>
+      </div>
+    </div><!-- /vp-panel-top -->
+
+    <!-- CHAT — actif uniquement pendant un match en direct ou une chaîne TV active.
+         Prend tout l'espace restant (flex:1), largeur 100%, défilement interne. -->
+    <div id="chat-section" class="chat-section" style="display:none">
+      <div class="chat-head">
+        <div class="chat-head-title">
+          <span class="chat-live-dot"></span>
+          <span>Chat en direct</span>
+        </div>
+        <span id="chat-count" class="chat-count"></span>
+      </div>
+      <div id="chat-messages" class="chat-messages"></div>
+      <div id="chat-login-hint" class="chat-login-hint" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <span>Connecte-toi pour écrire dans le chat</span>
+      </div>
+      <div id="chat-logged-in" style="display:none">
+        <div id="chat-input-wrap" class="chat-input-wrap">
+          <input id="chat-input" class="chat-input" type="text" placeholder="Écrire un message…" maxlength="200" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();chatSend();}">
+          <div id="chat-cooldown-badge" class="chat-cooldown-badge" style="display:none">5</div>
+          <button id="chat-send-btn" class="chat-send-btn" onclick="chatSend()">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE PARAMÈTRES (full screen) -->
+<div class="sett-ov" id="sett-ov">
+  <div class="sett-inner">
+    <!-- Header -->
+    <div class="sett-head">
+      <button class="sett-back" id="sett-back">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      </button>
+      <span class="sett-title">Paramètres</span>
+    </div>
+
+    <div class="sett-body">
+
+      <!-- Apparence -->
+      <div class="sett-section">
+        <div class="sett-label">Apparence</div>
+        <div class="sett-card">
+          <div class="theme-grid">
+            <button class="theme-btn" data-theme="dark" id="theme-dark"><div class="theme-preview dark-prev"><div class="prev-nav"></div><div class="prev-card"></div><div class="prev-card s"></div></div><span>Sombre</span></button>
+            <button class="theme-btn" data-theme="grey" id="theme-grey"><div class="theme-preview grey-prev"><div class="prev-nav"></div><div class="prev-card"></div><div class="prev-card s"></div></div><span>Gris</span></button>
+            <button class="theme-btn" data-theme="light" id="theme-light"><div class="theme-preview light-prev"><div class="prev-nav"></div><div class="prev-card"></div><div class="prev-card s"></div></div><span>Clair</span></button>
+          </div>
+          <div class="sett-divider"></div>
+          <div class="sett-row-inline">
+            <span class="sett-row-title">Couleur principale</span>
+            <div class="accent-grid" style="margin-bottom:0">
+              <button class="accent-btn" data-accent="#e8ff47" style="--c:#e8ff47"></button>
+              <button class="accent-btn" data-accent="#c8cad8" style="--c:#c8cad8"></button>
+              <button class="accent-btn" data-accent="#7a7d96" style="--c:#7a7d96"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Affichage -->
+      <div class="sett-section">
+        <div class="sett-label">Affichage</div>
+        <div class="sett-card">
+          <div class="sett-row">
+            <div class="sett-row-left">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+              <div><div class="sett-row-title">Scores en temps réel</div><div class="sett-row-sub">Rafraîchir toutes les 30s</div></div>
+            </div>
+            <div class="toggle-switch" id="toggle-livescores"><span class="toggle-track"><span class="toggle-thumb"></span></span></div>
+          </div>
+          <div class="sett-divider"></div>
+          <div class="sett-row">
+            <div class="sett-row-left">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+              <div><div class="sett-row-title">Format 24h</div><div class="sett-row-sub">Horaires en format 24h</div></div>
+            </div>
+            <div class="toggle-switch on" id="toggle-24h"><span class="toggle-track"><span class="toggle-thumb"></span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Notifications -->
+      <div class="sett-section">
+        <div class="sett-label">Notifications</div>
+        <div class="sett-card">
+          <div class="sett-row">
+            <div class="sett-row-left">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+              <div><div class="sett-row-title">Alertes buts</div><div class="sett-row-sub">Matchs favoris uniquement</div></div>
+            </div>
+            <div class="toggle-switch" id="toggle-notif"><span class="toggle-track"><span class="toggle-thumb"></span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lecteur -->
+      <div class="sett-section">
+        <div class="sett-label">Lecteur vidéo</div>
+        <div class="sett-card">
+          <div class="sett-row">
+            <div class="sett-row-left">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+              <div><div class="sett-row-title">Démarrage muet</div><div class="sett-row-sub">Lancer les streams sans son</div></div>
+            </div>
+            <div class="toggle-switch" id="toggle-mute-start"><span class="toggle-track"><span class="toggle-thumb"></span></span></div>
+          </div>
+          <div class="sett-divider"></div>
+          <div class="sett-row">
+            <div class="sett-row-left">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+              <div><div class="sett-row-title">Plein écran auto</div><div class="sett-row-sub">À l'ouverture d'un match</div></div>
+            </div>
+            <div class="toggle-switch" id="toggle-autofs"><span class="toggle-track"><span class="toggle-thumb"></span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Application -->
+      <div class="sett-section">
+        <div class="sett-label">Application</div>
+        <div class="sett-card">
+          <button class="sett-row sett-btn" id="settings-install-btn">
+            <div class="sett-row-left">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5z"/></svg>
+              <div><div class="sett-row-title" id="settings-install-title">Installer l'app</div><div class="sett-row-sub">Ajouter à l'écran d'accueil</div></div>
+            </div>
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style="color:var(--t3)"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+          </button>
+          <div class="sett-divider"></div>
+          <button class="sett-row sett-btn" id="settings-clear-btn">
+            <div class="sett-row-left">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18" style="color:var(--red)"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zm2.46-7.12l1.41-1.41L12 12.59l2.12-2.12 1.41 1.41L13.41 14l2.12 2.12-1.41 1.41L12 15.41l-2.12 2.12-1.41-1.41L10.59 14l-2.13-2.12zM15.5 4l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+              <div><div class="sett-row-title" style="color:var(--red)">Effacer les favoris</div><div class="sett-row-sub">Supprimer tous les matchs sauvegardés</div></div>
+            </div>
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style="color:var(--t3)"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Soutenir -->
+      <div class="sett-section">
+        <div class="sett-label">Soutenir</div>
+        <a class="sett-card sett-support" href="https://www.paypal.com/ncp/payment/ENMYKYCAF" target="_blank" rel="noopener">
+          <div class="sett-support-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          </div>
+          <div>
+            <div class="sett-row-title">Soutenir Okin Stream</div>
+            <div class="sett-row-sub">Un café pour garder le site en vie ☕</div>
+          </div>
+          <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style="color:var(--t3);margin-left:auto"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+        </a>
+      </div>
+
+      <!-- À propos -->
+      <div class="sett-section">
+        <div class="sett-label">À propos</div>
+        <div class="sett-card sett-about">
+          <div class="sett-about-logo"><img src="/ball.png" width="48" height="48" style="object-fit:contain;display:block" alt=""></div>
+          <div class="sett-about-name">OKIN STREAM</div>
+          <div class="sett-about-version">Version 1.0</div>
+          <div class="sett-about-text">Application de suivi de matchs football en direct. Scores temps réel, streams et compétitions.</div>
+        </div>
+      </div>
+
+      <!-- Legal -->
+      <div class="sett-section">
+        <div class="sett-label">Légal</div>
+        <div class="sett-card">
+          <button class="sett-row sett-btn" onclick="openLegal('cgu')">
+            <div class="sett-row-left"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg><div><div class="sett-row-title">Conditions d'utilisation</div></div></div>
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style="color:var(--t3)"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+          </button>
+          <div class="sett-divider"></div>
+          <button class="sett-row sett-btn" onclick="openLegal('privacy')">
+            <div class="sett-row-left"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg><div><div class="sett-row-title">Confidentialité</div></div></div>
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style="color:var(--t3)"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="sett-footer">© 2026 Okin Stream</div>
+
+    </div>
+  </div>
+</div>
+
+<!-- MULTI-STREAM OVERLAY -->
+<div class="multi-ov" id="multi-ov">
+  <div class="multi-grid" id="multi-grid">
+    <div class="multi-empty" id="multi-empty">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36" style="color:var(--t3)"><path d="M2 4h9v9H2zm11 0h9v9h-9zM2 15h9v9H2zm11 0h9v9h-9z"/></svg>
+      <span>Ouvre un match pour commencer</span>
+      <span style="font-size:11px;color:var(--t3)">Jusqu'à 4 streams simultanés</span>
+    </div>
+  </div>
+  <!-- Tiroir "ajouter un match" -->
+  <div class="multi-drawer" id="multi-drawer">
+    <div class="multi-drawer-head">
+      <span class="multi-drawer-title">Choisir un match</span>
+      <button class="multi-drawer-close" id="multi-drawer-close">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <div class="multi-drawer-list" id="multi-drawer-list"></div>
+  </div>
+  <!-- Barre bas -->
+  <div class="multi-bar">
+    <button class="multi-bar-btn" id="multi-add-btn">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+      <span>Ajouter</span>
+    </button>
+    <div class="multi-bar-dots" id="multi-bar-dots"></div>
+    <button class="multi-bar-btn danger" id="multi-close">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      <span>Quitter</span>
+    </button>
+  </div>
+</div>
+
+<!-- Bannière "Ajouter à l'écran d'accueil" -->
+<div class="pwa-banner" id="pwa-banner">
+  <div class="pwa-banner-icon"><img src="/ball.png" width="36" height="36" style="object-fit:contain;display:block" alt=""></div>
+  <div class="pwa-banner-text">
+    <span class="pwa-banner-title">Installer Okin Stream</span>
+    <span class="pwa-banner-sub">Ajouter sur l'écran d'accueil</span>
+  </div>
+  <button class="pwa-banner-btn" id="pwa-install-btn">Installer</button>
+  <button class="pwa-banner-dismiss" id="pwa-dismiss-btn">
+    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+  </button>
+</div>
+<div class="toast" id="toast"></div>
+<!-- PAGE CLUB -->
+<div class="club-ov" id="club-ov">
+  <div class="club-inner" id="club-inner">
+    <!-- Header -->
+    <div class="club-hero" id="club-hero">
+      <button class="club-back" id="club-back">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      </button>
+      <div class="club-hero-content">
+        <div class="club-hero-crest" id="club-hero-crest"></div>
+        <div class="club-hero-info">
+          <div class="club-hero-name" id="club-hero-name">—</div>
+          <div class="club-hero-country" id="club-hero-country">—</div>
+        </div>
+      </div>
+    </div>
+    <!-- Body scrollable -->
+    <div class="club-body" id="club-body">
+      <div class="club-loading" id="club-loading"><div class="spinner"></div></div>
+      <div class="club-content" id="club-content" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+<script src="app.js"></script>
+<!-- OVERLAY LÉGAL -->
+<div id="legal-ov" class="legal-ov">
+  <div class="legal-head">
+    <button class="legal-back-btn" onclick="closeLegal()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+    </button>
+    <span id="legal-head-title" class="legal-head-title"></span>
+  </div>
+  <div id="legal-scroll" class="legal-body"></div>
+</div>
+
+<!-- ─── TV GROUP OVERLAY ─────────────────────────── -->
+<div class="tv-group-ov" id="tv-group-ov">
+  <div class="tv-group-header" id="tv-group-header">
+    <div class="tv-group-header-bg" id="tv-group-header-bg"></div>
+    <div class="tv-group-header-fade"></div>
+    <button class="tv-group-back" onclick="closeTVGroup()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+    </button>
+    <div id="tv-group-title" class="tv-group-title">TV</div>
+    <div class="tv-group-subtitle" id="tv-group-subtitle">
+      <span class="tv-group-subtitle-dot"></span>
+      <span id="tv-group-count"></span>
+    </div>
+  </div>
+  <div class="tv-group-body" id="tv-group-body"></div>
+</div>
+
+
+<!-- OVERLAY VIP -->
+<div id="vip-ov" class="vip-ov">
+
+  <!-- Header -->
+  <div class="vip-ov-head">
+    <button class="vip-ov-back" onclick="closeVIP()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="17" height="17"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+    </button>
+    <div class="vip-ov-logo"><svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg></div>
+    <span class="vip-ov-title">VIP</span>
+  </div>
+
+  <div class="vip-ov-scroll">
+
+    <!-- Statut actif (caché par défaut) -->
+    <div id="vip-status-block" style="display:none;padding:16px 16px 0"></div>
+
+    <!-- Hero -->
+    <div id="vip-offers-block">
+      <div class="vip-hero">
+        <div class="vip-hero-icon">
+          <div class="vip-hero-ring"></div>
+          <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg>
+        </div>
+        <div class="vip-hero-title">Okin Stream VIP</div>
+        <div class="vip-hero-sub">Une expérience sans compromis</div>
+      </div>
+
+      <!-- Avantages -->
+      <div class="vip-perks-grid">
+        <div class="vip-perk-cell">
+          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></div>
+          <div class="vip-perk-label">Sans pub</div>
+        </div>
+        <div class="vip-perk-cell">
+          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+          <div class="vip-perk-label">Streams HD</div>
+        </div>
+        <div class="vip-perk-cell">
+          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/></svg></div>
+          <div class="vip-perk-label">Multi-stream</div>
+        </div>
+        <div class="vip-perk-cell">
+          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
+          <div class="vip-perk-label">Alertes</div>
+        </div>
+      </div>
+
+      <!-- Plans -->
+      <div class="vip-plans">
+
+        <!-- 5€ — DISPONIBLE -->
+        <div class="vip-plan-card vip-plan-active">
+          <div class="vip-plan-border"></div>
+          <div class="vip-plan-top">
+            <div class="vip-plan-name">Essentiel</div>
+            <div class="vip-plan-avail">Disponible</div>
+          </div>
+          <div class="vip-plan-price-row">
+            <span class="vip-plan-price">5€</span>
+            <span class="vip-plan-period">/mois</span>
+          </div>
+          <div class="vip-plan-desc">Toutes les fonctionnalités VIP · Sans engagement</div>
+          <div class="vip-plan-btn-wrap">
+            <button class="vip-plan-paypal-btn" onclick="startPayment()">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M19.5 6.5C19.5 9.54 17.29 12 14.25 12H11.5L10.5 17H7.5L9.5 6H14.75C17.37 6 19.5 6.5 19.5 6.5Z" fill="#009cde"/>
+                <path d="M20.5 4C20.5 4 20 7.5 17 9.5C14.5 11 11.5 11 11.5 11L10.5 17H7.5L9.5 6H15C18.04 6 20.5 4 20.5 4Z" fill="#003087"/>
+                <path d="M17.5 8C17.5 11.04 15.29 13.5 12.25 13.5H9.5L8.5 18.5H5.5L7.5 7.5H12.75C15.37 7.5 17.5 8 17.5 8Z" fill="#009cde"/>
+              </svg>
+              Payer avec PayPal — 5€/mois
+            </button>
+          </div>
+        </div>
+
+        <!-- 20€ / 6 MOIS — DISPONIBLE -->
+        <div class="vip-plan-card vip-plan-active">
+          <div class="vip-plan-border"></div>
+          <div class="vip-plan-top">
+            <div class="vip-plan-name">Longue durée</div>
+            <div class="vip-plan-avail">Disponible</div>
+          </div>
+          <div class="vip-plan-price-row">
+            <span class="vip-plan-price">20€</span>
+            <span class="vip-plan-period">/6 mois</span>
+          </div>
+          <div class="vip-plan-desc">Toutes les fonctionnalités VIP · Paiement unique · Valable 6 mois</div>
+          <div class="vip-plan-btn-wrap">
+            <button class="vip-plan-paypal-btn" onclick="startPaymentLifetime()">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M19.5 6.5C19.5 9.54 17.29 12 14.25 12H11.5L10.5 17H7.5L9.5 6H14.75C17.37 6 19.5 6.5 19.5 6.5Z" fill="#009cde"/>
+                <path d="M20.5 4C20.5 4 20 7.5 17 9.5C14.5 11 11.5 11 11.5 11L10.5 17H7.5L9.5 6H15C18.04 6 20.5 4 20.5 4Z" fill="#003087"/>
+                <path d="M17.5 8C17.5 11.04 15.29 13.5 12.25 13.5H9.5L8.5 18.5H5.5L7.5 7.5H12.75C15.37 7.5 17.5 8 17.5 8Z" fill="#009cde"/>
+              </svg>
+              Payer avec PayPal — 20€ / 6 mois
+            </button>
+          </div>
+        </div>
+
+
+      </div><!-- /vip-plans -->
+    </div><!-- /vip-offers-block -->
+
+    <!-- Clé VIP -->
+    <div class="vip-renew-divider" id="vip-renew-divider">Nouvelle clé / Renouvellement</div>
+    <div id="vip-key-block" class="vip-key-block">
+      <div class="vip-key-label">Entrer une clé VIP</div>
+      <div class="vip-key-row">
+        <input id="vip-key-input" class="vip-key-input" type="text" placeholder="OKIN-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false">
+        <button class="vip-key-submit" onclick="activateVIPKey()">Activer</button>
+      </div>
+    </div>
+
+  </div><!-- /vip-ov-scroll -->
+</div>
+
+
+<script>
+  // Rendre le bouton PayPal quand l'overlay VIP est ouvert
+  let paypalRendered = false;
+  function renderPaypalBtn(){
+    if(paypalRendered) return;
+    const container = document.getElementById('paypal-container-LUJFVUB46FNVG');
+    if(!container || typeof paypal === 'undefined') return;
+    try {
+      paypal.HostedButtons({
+        hostedButtonId: "LUJFVUB46FNVG",
+      }).render("#paypal-container-LUJFVUB46FNVG");
+      paypalRendered = true;
+    } catch(e){ console.warn('PayPal render:', e); }
+  }
+</script>
+<!-- GATE PUB -->
+<div id="ad-gate" class="ad-gate">
+  <div class="ad-gate-bg"></div>
+  <div class="ad-gate-card">
+
+    <!-- Header -->
+    <div class="ag-header">
+      <div class="ag-header-left">
+        <div class="ag-live-dot"></div>
+        <span class="ag-label">Accès au stream</span>
+      </div>
+      <button class="ag-close" onclick="closeAdGate(false)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <!-- Titre -->
+    <div class="ag-title">Une petite étape<br>avant le stream</div>
+    <div class="ag-sub">Okin Stream est 100% gratuit grâce à la publicité. Clique ci-dessous, ferme la pub dès qu'elle s'affiche, et ton stream démarre.</div>
+
+    <!-- Règles -->
+    <div class="ag-rules">
+      <div class="ag-rule ag-ok">
+        <div class="ag-rule-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="13" height="13"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <span>Ferme la pub dès qu'elle apparaît</span>
+      </div>
+      <div class="ag-rule ag-warn">
+        <div class="ag-rule-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="13" height="13"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </div>
+        <span>Ne télécharge rien &middot; Ne scanne pas de QR</span>
+      </div>
+      <div class="ag-rule ag-warn">
+        <div class="ag-rule-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="13" height="13"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </div>
+        <span>Ne clique nulle part sur la page de pub</span>
+      </div>
+    </div>
+
+    <!-- CTA -->
+    <a href="https://omg10.com/4/10810413" target="_blank" rel="noopener"
+       class="ag-btn" onclick="setTimeout(()=>closeAdGate(true),3000)">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
+      Voir la publicité
+    </a>
+
+    <!-- Footer -->
+    <div class="ag-footer">
+      <span class="ag-free-badge">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="10" height="10"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg>
+        VIP
+      </span>
+      <span class="ag-footer-txt" onclick="closeAdGate(false);setPage('account')">
+        Passe en VIP pour ne plus voir de pubs
+      </span>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── OVERLAY AUTH ── -->
+<div id="auth-ov" class="auth-ov">
+  <div class="auth-modal">
+    <div class="auth-modal-head">
+      <div class="auth-modal-logo">
+        <img src="/ball.png" width="28" height="28" style="object-fit:contain" alt="">
+        <span>OKIN STREAM</span>
+      </div>
+      <button class="auth-modal-close" onclick="closeAuthModal()">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <div class="auth-modal-scroll">
+      <div id="auth-modal-body"></div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
