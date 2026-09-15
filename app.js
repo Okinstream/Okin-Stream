@@ -14,6 +14,156 @@ const FB_CONFIG = {
 let db = null;
 let streams = {};
 
+// PWA — vrai dès que le navigateur signale que l'app est installable
+// (Chrome/Android/desktop, via beforeinstallprompt). iOS ne déclenche jamais
+// cet événement, donc on initialise à true sur iOS pour proposer le guide
+// manuel. Déclaré ici (et pas dans le bloc PWA en bas du fichier) car
+// renderAccount() peut s'exécuter avant que ce bloc ne soit atteint.
+let pwaCanInstall = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+// ═══════════════════════════════════════════════════
+// ── CONSOLE DE DÉBOGAGE INTÉGRÉE ──
+// Sur téléphone, impossible d'ouvrir les outils développeur. Ce panneau
+// capture tout ce qui passe par console.log/warn/error ainsi que les erreurs
+// JavaScript non rattrapées, et les affiche dans l'app avec un bouton
+// "Copier". Réservé aux admins, ou activable par n'importe qui via ?debug=1.
+// ═══════════════════════════════════════════════════
+const DBG_MAX = 300;
+let _dbgLogs = [];
+let _dbgOpen = false;
+let _dbgForced = false;
+try{ _dbgForced = new URLSearchParams(location.search).get('debug') === '1'; }catch(e){}
+
+function dbgPush(level, args){
+  let txt;
+  try{
+    txt = Array.from(args).map(function(a){
+      if(a instanceof Error) return (a.message||'') + (a.stack ? ('\n' + a.stack.split('\n').slice(0,3).join('\n')) : '');
+      if(typeof a === 'object' && a !== null){
+        try{ return JSON.stringify(a).slice(0, 400); }catch(e){ return String(a); }
+      }
+      return String(a);
+    }).join(' ');
+  }catch(e){ txt = '[log illisible]'; }
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0') + ':' + String(t.getSeconds()).padStart(2,'0');
+  _dbgLogs.push({level: level, time: hh, txt: txt});
+  if(_dbgLogs.length > DBG_MAX) _dbgLogs.shift();
+  if(_dbgOpen) dbgRender();
+  // Pastille rouge sur le bouton quand une erreur survient
+  if(level === 'error' || level === 'warn'){
+    const b = document.getElementById('dbg-fab');
+    if(b) b.classList.add('dbg-has-err');
+  }
+}
+
+// On enveloppe les méthodes natives sans les remplacer : la vraie console
+// continue de fonctionner normalement sur ordinateur.
+(function hookConsole(){
+  ['log','warn','error','info'].forEach(function(lvl){
+    const orig = console[lvl] ? console[lvl].bind(console) : function(){};
+    console[lvl] = function(){ try{ dbgPush(lvl, arguments); }catch(e){} orig.apply(null, arguments); };
+  });
+  window.addEventListener('error', function(e){
+    dbgPush('error', ['[JS] ' + (e.message||'erreur') + ' @ ' + (e.filename||'').split('/').pop() + ':' + (e.lineno||'?')]);
+  });
+  window.addEventListener('unhandledrejection', function(e){
+    const r = e.reason;
+    dbgPush('error', ['[Promise] ' + (r && (r.message || r.code) ? (r.message || r.code) : String(r))]);
+  });
+})();
+
+function dbgVisible(){ return _dbgForced || (typeof isAdmin === 'function' && isAdmin()); }
+
+function dbgRender(){
+  const body = document.getElementById('dbg-body');
+  if(!body) return;
+  if(!_dbgLogs.length){ body.innerHTML = '<div class="dbg-empty">Aucun message pour l\'instant</div>'; return; }
+  body.innerHTML = _dbgLogs.map(function(l){
+    return '<div class="dbg-line dbg-' + l.level + '"><span class="dbg-time">' + l.time + '</span>'
+      + '<span class="dbg-txt">' + escHtml(l.txt) + '</span></div>';
+  }).join('');
+  body.scrollTop = body.scrollHeight;
+}
+
+function dbgToggle(){
+  const ov = document.getElementById('dbg-ov');
+  if(!ov) return;
+  _dbgOpen = !_dbgOpen;
+  ov.style.display = _dbgOpen ? 'flex' : 'none';
+  const b = document.getElementById('dbg-fab');
+  if(b) b.classList.remove('dbg-has-err');
+  if(_dbgOpen) dbgRender();
+}
+function dbgClear(){ _dbgLogs = []; dbgRender(); }
+function dbgCopy(){
+  const txt = _dbgLogs.map(function(l){ return '[' + l.time + '] ' + l.level.toUpperCase() + ' ' + l.txt; }).join('\n');
+  const info = 'Okin Stream — logs\n' + navigator.userAgent + '\n' + location.href + '\n\n';
+  const full = info + txt;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(full).then(function(){ toast('📋 Logs copiés'); })
+      .catch(function(){ dbgFallbackCopy(full); });
+  } else { dbgFallbackCopy(full); }
+}
+function dbgFallbackCopy(txt){
+  const ta = document.createElement('textarea');
+  ta.value = txt; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); toast('📋 Logs copiés'); }
+  catch(e){ toast('Copie impossible'); }
+  document.body.removeChild(ta);
+}
+
+// Injecte le bouton flottant + le panneau dans la page
+function dbgMount(){
+  if(document.getElementById('dbg-fab') || !dbgVisible()) return;
+  const fab = document.createElement('button');
+  fab.id = 'dbg-fab';
+  fab.className = 'dbg-fab';
+  fab.title = 'Console de débogage';
+  fab.onclick = dbgToggle;
+  fab.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>';
+  document.body.appendChild(fab);
+
+  const ov = document.createElement('div');
+  ov.id = 'dbg-ov';
+  ov.className = 'dbg-ov';
+  ov.style.display = 'none';
+  ov.innerHTML =
+      '<div class="dbg-panel">'
+    +   '<div class="dbg-head">'
+    +     '<span class="dbg-title">Console</span>'
+    +     '<button class="dbg-btn" onclick="dbgCopy()">Copier</button>'
+    +     '<button class="dbg-btn" onclick="dbgClear()">Vider</button>'
+    +     '<button class="dbg-btn dbg-close" onclick="dbgToggle()">✕</button>'
+    +   '</div>'
+    +   '<div class="dbg-body" id="dbg-body"></div>'
+    + '</div>';
+  document.body.appendChild(ov);
+}
+// Montage : immédiat si ?debug=1, sinon on retente pendant 60s le temps que
+// le statut admin remonte de Firebase (et attachAdminListener le fait aussi
+// dès qu'il connaît le statut).
+function dbgTryMount(){
+  try{
+    dbgMount();
+    if(document.getElementById('dbg-fab')) return true;
+  }catch(e){ console && console.warn && console.warn('[dbg]', e.message); }
+  return false;
+}
+if(document.readyState === 'loading'){
+  document.addEventListener('DOMContentLoaded', dbgTryMount);
+} else {
+  dbgTryMount();
+}
+(function(){
+  let tries = 0;
+  const it = setInterval(function(){
+    tries++;
+    if(dbgTryMount() || tries > 20) clearInterval(it);
+  }, 3000);
+})();
+
 // ── Sécurité XSS — échapper le HTML dans les données externes ──
 function escHtml(s){
   if(!s) return '';
@@ -30,6 +180,52 @@ function escHtml(s){
 let auth = null;
 let currentUser = null;
 
+// ── Parrainage : capture ?ref=CODE dès l'arrivée sur le site, avant même
+// la connexion — l'utilisateur peut créer son compte APRÈS avoir cliqué le
+// lien, donc on garde le code en attente jusqu'à la connexion. ──
+(function captureReferralParam(){
+  try{
+    const ref = new URLSearchParams(location.search).get('ref');
+    if(ref) localStorage.setItem('pending_referral', ref.trim().toUpperCase());
+  }catch(e){}
+})();
+function linkPendingReferral(uid){
+  let ref;
+  try{ ref = localStorage.getItem('pending_referral'); }catch(e){ return; }
+  if(!ref) return;
+  fetch('/api/referral/link', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({uid, ref}),
+  }).finally(() => { try{ localStorage.removeItem('pending_referral'); }catch(e){} });
+}
+let referralInfo = null; // {code, paidCount, monthsEarned, progress} — mis en cache après 1er fetch
+async function loadReferralInfo(){
+  if(!currentUser) return null;
+  try{
+    const res = await fetch('/api/referral/me', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({uid: currentUser.uid}),
+    });
+    const data = await res.json();
+    if(data.ok){ referralInfo = data; return data; }
+  }catch(e){}
+  return null;
+}
+function copyReferralLink(){
+  if(!referralInfo?.code) return;
+  const link = location.origin + '/?ref=' + referralInfo.code;
+  navigator.clipboard?.writeText(link)
+    .then(()=>toast('🔗 Lien de parrainage copié !'))
+    .catch(()=>toast('Impossible de copier'));
+}
+function toggleRefHowto(){
+  const el=$('pf-ref-howto'),chev=$('pf-ref-howto-chevron');
+  if(!el)return;
+  const open=el.style.display!=='none';
+  el.style.display=open?'none':'block';
+  if(chev)chev.style.transform=open?'':'rotate(180deg)';
+}
+
 function initFirebase(){
   try {
     const fbApp = firebase.initializeApp(FB_CONFIG);
@@ -41,17 +237,26 @@ function initFirebase(){
       if(prevUid && prevUid !== user?.uid){
         detachVIPListener(prevUid);
         detachAdminListener(prevUid);
+        detachNameColorListener(prevUid);
+        detachPhotoListener(prevUid);
       }
       currentUser = user;
       updateAuthUI();
       if(user){
         attachVIPListener(user.uid);
         attachAdminListener(user.uid);
+        saveOwnProfile(user);
+        attachNameColorListener(user.uid);
+        attachPhotoListener(user.uid);
+        linkPendingReferral(user.uid);
+        loadReferralInfo().then(()=>{ if(page==='account') renderContent(); });
       } else {
         // Déconnecté : le VIP n'est plus garanti par Firebase → on repasse à "non VIP"
         vipLive = {active:false, exp:0, key:null};
         isAdminCache = false;
-        try{ localStorage.removeItem('vip_key'); localStorage.removeItem('vip_exp'); }catch(e){}
+        myNameColor = null;
+        myPhoto = null;
+        try{ localStorage.removeItem('vip_key'); localStorage.removeItem('vip_exp'); localStorage.removeItem('name_color'); }catch(e){}
         updateVIPCard(); updateVIPOv();
       }
     });
@@ -96,27 +301,125 @@ function updateAuthUI(){
 // localStorage ne sert plus que de cache d'affichage (jamais de preuve).
 let vipLive = { active:false, exp:0, key:null };
 
+// Applique un objet VIP brut (venu du temps réel OU du secours HTTPS)
+function applyVipValue(v){
+  if(!v || (!v.key && !v.exp)){
+    vipLive = {active:false, exp:0, key:null};
+    try{ localStorage.removeItem('vip_key'); localStorage.removeItem('vip_exp'); }catch(e){}
+    updateVIPCard(); updateVIPOv();
+    if(page==='account') renderContent();
+    return;
+  }
+  const active = v.exp ? Date.now() < v.exp : true;
+  vipLive = {active, exp: v.exp || Infinity, key: v.key || null};
+  try{ localStorage.setItem('vip_key', v.key||''); localStorage.setItem('vip_exp', String(v.exp||'')); }catch(e){}
+  updateVIPCard(); updateVIPOv();
+  if(page==='account') renderContent();
+}
+
+// SECOURS : le listener temps réel ci-dessous passe par le WebSocket Firebase.
+// Si celui-ci est bloqué (bloqueur de pub, réseau d'entreprise, proxy…), le
+// statut VIP n'arrivait JAMAIS — l'utilisateur activait sa clé et ne voyait
+// aucun changement, même après reconnexion. Cette lecture unique passe en
+// HTTPS classique et débloque ces cas.
+function vipRestFallback(uid){
+  if(!uid) return;
+  getAuthToken().then(function(token){
+    const base = 'https://okin-stream-765b2-default-rtdb.firebaseio.com';
+    const url = base + '/users/' + uid + '/vip.json' + (token ? ('?auth=' + token) : '');
+    return fetch(url).then(r => r.ok ? r.json() : null);
+  }).then(function(v){
+    // On n'écrase pas une info temps réel déjà reçue et valide
+    if(vipLive && vipLive.active) return;
+    if(v) applyVipValue(v);
+  }).catch(function(e){ console.warn('[vip] secours HTTPS échoué:', e && e.message); });
+}
+
+// Enregistre son propre profil (email + pseudo) dans la base, pour que le
+// panel admin puisse identifier un utilisateur à partir de son ID. Firebase
+// Auth ne permet pas de chercher un autre compte depuis le client, et les
+// règles empêchent de lire le nœud d'un autre utilisateur — c'est donc le
+// serveur qui lira ces champs, avec son secret.
+function saveOwnProfile(user){
+  if(!db || !user) return;
+  const p = {
+    email: user.email || null,
+    pseudo: (user.displayName || (user.email||'').split('@')[0] || '').slice(0,40) || null,
+    lastSeen: Date.now(),
+  };
+  db.ref('users/'+user.uid+'/profile').update(p).catch(function(e){
+    console.warn('[profil] enregistrement refusé:', e && e.message);
+  });
+}
+
 function attachVIPListener(uid){
   if(!db || !uid) return;
-  db.ref('users/'+uid+'/vip').on('value', snap=>{
-    const v = snap.val();
-    if(!v || !v.key){
-      vipLive = {active:false, exp:0, key:null};
-      try{ localStorage.removeItem('vip_key'); localStorage.removeItem('vip_exp'); }catch(e){}
-      updateVIPCard(); updateVIPOv();
-      return;
-    }
-    const active = v.exp ? Date.now() < v.exp : true;
-    vipLive = {active, exp: v.exp || Infinity, key: v.key};
-    // Cache local uniquement pour un affichage instantané au prochain chargement —
-    // jamais utilisé comme preuve : isVIP() ne lit QUE vipLive.
-    try{ localStorage.setItem('vip_key', v.key); localStorage.setItem('vip_exp', String(v.exp||'')); }catch(e){}
-    updateVIPCard(); updateVIPOv();
+  // Filet de sécurité : si rien n'est arrivé par le temps réel au bout de 5s,
+  // on tente la lecture HTTPS.
+  setTimeout(function(){ if(!vipLive || !vipLive.active) vipRestFallback(uid); }, 5000);
+  db.ref('users/'+uid+'/vip').on('value', function(snap){
+    // Le champ "key" est absent du VIP offert par parrainage : on se base sur
+    // la date d'expiration, seule chose qui compte réellement.
+    applyVipValue(snap.val());
+  }, function(err){
+    console.warn('[vip] temps réel refusé:', err && err.message);
+    vipRestFallback(uid);
   });
 }
 function detachVIPListener(uid){
   if(!db || !uid) return;
   db.ref('users/'+uid+'/vip').off();
+}
+
+// ── Couleur de pseudo VIP (1 à 6, façon "chrome" Brawl Stars) ──
+// Réservé aux VIP : la sélection est ignorée côté rendu si l'utilisateur n'est plus VIP.
+let myNameColor = null;
+function attachNameColorListener(uid){
+  if(!db || !uid) return;
+  db.ref('users/'+uid+'/nameColor').on('value', snap=>{
+    myNameColor = snap.val() || null;
+    try{ localStorage.setItem('name_color', myNameColor ? String(myNameColor) : ''); }catch(e){}
+    if(page==='account') renderContent();
+  });
+}
+function detachNameColorListener(uid){
+  if(!db || !uid) return;
+  db.ref('users/'+uid+'/nameColor').off();
+}
+
+// ── Photo de profil VIP ──
+// On N'UTILISE PLUS Firebase Storage : depuis fin 2024, Cloud Storage exige un
+// plan payant (Blaze) sur les nouveaux projets, ce qui faisait échouer l'upload
+// silencieusement. À la place on redimensionne l'image à 256px, on la compresse
+// en JPEG, et on stocke la chaîne base64 directement dans la Realtime Database
+// (gratuite). ~40 Ko par photo, largement acceptable.
+let myPhoto = null;
+function attachPhotoListener(uid){
+  if(!db || !uid) return;
+  db.ref('users/'+uid+'/photo').on('value', snap=>{
+    myPhoto = snap.val() || null;
+    if(page==='account') renderContent();
+  });
+}
+function detachPhotoListener(uid){
+  if(!db || !uid) return;
+  db.ref('users/'+uid+'/photo').off();
+}
+function setNameColor(n){
+  if(!isVIP()){ toast('Réservé aux membres VIP'); return; }
+  if(!currentUser || !db) return;
+  myNameColor = n || null;
+  db.ref('users/'+currentUser.uid+'/nameColor').set(myNameColor);
+  _pseudoColorsOpen = false; // le panneau se referme après le choix
+  renderContent();
+}
+
+// Panneau de couleurs replié/déplié — l'état survit au re-render de la page
+let _pseudoColorsOpen = false;
+function togglePseudoColors(){
+  _pseudoColorsOpen = !_pseudoColorsOpen;
+  const pop = document.getElementById('pf-color-pop');
+  if(pop) pop.style.display = _pseudoColorsOpen ? '' : 'none';
 }
 
 // ── CONNEXION GOOGLE ──
@@ -619,7 +922,7 @@ function checkGoalNotifications(){
   });
 }
 // Vérifier les buts toutes les 30s (en sync avec loadLiveData)
-setInterval(checkGoalNotifications, 30000);
+setInterval(()=>{ if(document.visibilityState==='visible') checkGoalNotifications(); }, 30000);
 
 
 let page='dashboard',sq='',selectedDate=null,lgFilter='all';
@@ -649,6 +952,59 @@ function getScore(m){const g=m.goals;return(g?.home==null||g?.away==null)?'- : -
 function getMin(m){
   if(m._status){if(m._status.short==='HT')return'MT';const e=m._status.elapsed;if(e==null)return'';return m._status.extra?`${e}+${m._status.extra}'`:`${e}'`;}
   if(m.status==='PAUSED')return'MT';if(m.status==='IN_PLAY')return'LIVE';return'';
+}
+
+// ═══════════════════════════════════════════════════
+// ── CHRONO À LA SECONDE ──
+// Aucune source ne diffuse un flux qui avance seconde par seconde : les API
+// (et FlashScore lui-même) ne donnent qu'une MINUTE. On mémorise donc l'instant
+// où cette minute a été reçue, puis on extrapole les secondes localement. Un
+// ticker rafraîchit l'affichage chaque seconde sans solliciter le réseau.
+// ═══════════════════════════════════════════════════
+const _clockSync = new Map();   // matchId -> {minute, at}
+let _clockTicker = null;
+
+// Mémorise la minute officielle et l'heure de réception (appelé au rafraîchissement)
+function noteMatchMinute(m){
+  if(!m || !isLive(m)) return;
+  const e = m._status?.elapsed;
+  if(e == null) return;
+  const id = String(m.id);
+  const prev = _clockSync.get(id);
+  // On ne réinitialise l'ancre que si la minute a changé, sinon le compteur
+  // de secondes repartirait de zéro à chaque cycle de rafraîchissement.
+  if(!prev || prev.minute !== e) _clockSync.set(id, {minute: e, at: Date.now()});
+}
+
+// Renvoie "23:43" à partir de l'ancre mémorisée
+function liveClock(m){
+  if(!m || !isLive(m)) return '';
+  if(m._status?.short === 'HT' || m.status === 'PAUSED') return 'MT';
+  const id = String(m.id);
+  const sync = _clockSync.get(id);
+  const e = m._status?.elapsed;
+  if(e == null) return getMin(m);
+  if(!sync) { _clockSync.set(id, {minute: e, at: Date.now()}); return e + ':00'; }
+  let sec = Math.floor((Date.now() - sync.at) / 1000);
+  if(sec > 119) sec = 119; // l'API a du retard : on plafonne au lieu de dériver
+  const totalSec = sync.minute * 60 + sec;
+  const mm = Math.floor(totalSec / 60), ss = totalSec % 60;
+  const extra = m._status?.extra ? '+' + m._status.extra : '';
+  return mm + extra + ':' + String(ss).padStart(2,'0');
+}
+
+// Met à jour tous les chronos affichés, une fois par seconde
+function startClockTicker(){
+  if(_clockTicker) return;
+  _clockTicker = setInterval(function(){
+    if(document.visibilityState !== 'visible') return;
+    const els = document.querySelectorAll('[data-clock]');
+    if(!els.length) return;
+    els.forEach(function(el){
+      const m = (data.live||[]).find(x => String(x.id) === el.dataset.clock);
+      if(m) el.textContent = liveClock(m);
+    });
+  }, 1000);
 }
 function isLive(m){return m.status==='IN_PLAY'||m.status==='PAUSED';}
 function isFin(m){return m.status==='FINISHED';}
@@ -770,14 +1126,1371 @@ function scrollDateToSelected(){
   if(bar&&chip) bar.scrollTo({left:chip.offsetLeft-bar.offsetWidth/2+chip.offsetWidth/2,behavior:'smooth'});
 }
 
+function normTeamName(s){
+  return(s||'').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // enlève les accents (é→e, ü→u...)
+    .replace(/\b(fc|cf|sc|afc|cd|ud|as|ac|ca|sd|rc|1\.)\b/g,'') // sigles de club fréquents qui diffèrent d'une source à l'autre
+    .replace(/[^a-z0-9]/g,''); // enlève espaces/points/tirets
+}
+function teamsFuzzyMatch(m,f){
+  const hn=f.teams?.home?.name,an=f.teams?.away?.name;if(!hn||!an)return false;
+  const mh=m.homeTeam.name||'',ma=m.awayTeam.name||'';
+  const nHn=normTeamName(hn),nAn=normTeamName(an),nMh=normTeamName(mh),nMa=normTeamName(ma);
+  // BUG corrigé : la comparaison brute (casse + accents) faisait échouer le
+  // matching pour la plupart des équipes dès que la graphie différait un peu
+  // d'une source à l'autre (ex: "Munchen" vs "München", "1. FC Union Berlin"
+  // vs "Union Berlin") — d'où "seul Union Berlin affiche des infos".
+  return(nMh===nHn||nMh.includes(nHn)||nHn.includes(nMh))&&(nMa===nAn||nMa.includes(nAn)||nAn.includes(nMa));
+}
+
+// ═══════════════════════════════════════════════════
+// ── DLIVE.SX — intégration intelligente de sources ──
+// Principe : dlive fournit un embed iframe direct (zéro bande passante
+// serveur), on se contente de deviner intelligemment à quel match/chaîne
+// chez nous correspond chaque chaîne/event dlive, avec validation admin
+// pour les cas incertains. Rien n'écrase jamais une source déjà assignée
+// manuellement — dlive s'ajoute toujours en alternative.
+// ═══════════════════════════════════════════════════
+
+// ─── Normalisation générique (clés de comparaison) ───
+// Enlève accents/casse/ponctuation + mots parasites qui n'apportent aucune
+// info de matching (hd/tv/live/officiel...). Les NOMBRES sont conservés
+// volontairement (beIN 1 ≠ beIN 2 — les distinguer est vital).
+const DLIVE_STOPWORDS = ['hd','sd','fhd','uhd','4k','tv','live','stream','channel','chaine','chaîne','officiel','official','backup','feed','multi'];
+function normKey(s){
+  let k = (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  DLIVE_STOPWORDS.forEach(w => { k = k.replace(new RegExp('\\b'+w+'\\b','g'), ''); });
+  return k.replace(/[^a-z0-9]/g,'');
+}
+
+// ─── Distance de Levenshtein + similarité normalisée (0 à 1) ───
+function levenshtein(a,b){
+  if(a===b)return 0;
+  const al=a.length, bl=b.length;
+  if(!al)return bl; if(!bl)return al;
+  let prev = Array.from({length:bl+1},(_,i)=>i);
+  for(let i=1;i<=al;i++){
+    const cur=[i];
+    for(let j=1;j<=bl;j++){
+      cur[j] = a[i-1]===b[j-1] ? prev[j-1] : 1+Math.min(prev[j-1],prev[j],cur[j-1]);
+    }
+    prev=cur;
+  }
+  return prev[bl];
+}
+function similarity(a,b){
+  const na=normKey(a), nb=normKey(b);
+  if(!na && !nb) return 1;
+  if(!na || !nb) return 0;
+  const maxLen = Math.max(na.length, nb.length);
+  return 1 - levenshtein(na,nb)/maxLen;
+}
+
+// ─── Table d'alias manuels (clé normalisée dlive → nom exact chez moi) ───
+// Extensible à la main : ajoute une ligne quand un nom dlive récurrent ne
+// matche jamais correctement tout seul. Plus fiable qu'un seuil de fuzzy.
+const DLIVE_ALIASES = {
+  // 'beinsportsfrance1': 'beIN Sport 1',
+  // 'canalfootballclub': 'Canal+ Foot',
+};
+
+// ─── Construction de l'URL embed dlive (iframe directe, zéro proxy) ───
+const DLIVE_FOLDERS = { channel: 'stream', event: 'stream' };
+function dliveUrl(channelId, folder='stream'){
+  return `https://dlive.sx/${folder}/${folder}-${channelId}.php`;
+}
+
+// ─── État du dernier sync + mappings validés/ignorés (chargés depuis Firebase) ───
+let dliveSyncMeta = { lastSync: 0, channelsMatched: 0, eventsMatched: 0, channelsPending: 0, eventsPending: 0 };
+let dlivePendingChannels = []; // [{dliveName, dliveId, candidates:[{target,score,type}], key}]
+let dlivePendingEvents = [];
+let dliveMappingConfirmed = { channels:{}, events:{} }; // depuis Firebase /dlive_mapping/
+let dliveMappingIgnored = {};
+
+async function loadDliveMappings(){
+  if(!db) return;
+  try{
+    const [chSnap, evSnap, ignSnap] = await Promise.all([
+      db.ref('dlive_mapping/channels').once('value'),
+      db.ref('dlive_mapping/events').once('value'),
+      db.ref('dlive_mapping/ignored').once('value'),
+    ]);
+    dliveMappingConfirmed.channels = chSnap.val() || {};
+    dliveMappingConfirmed.events = evSnap.val() || {};
+    dliveMappingIgnored = ignSnap.val() || {};
+  }catch(e){ console.error('[dlive] chargement mappings échoué', e.message); }
+}
+
+// ─── Matching d'une chaîne dlive vers une de mes chaînes (ADMIN_CHANNELS/TV_CHANNELS) ───
+// Retourne {target, score, source: 'admin'|'alias'|'exact'|'fuzzy'} ou null.
+function matchChannel(dliveName, myChannels){
+  const key = normKey(dliveName);
+  // 1. Override admin confirmé — priorité absolue
+  const confirmed = dliveMappingConfirmed.channels[key];
+  if(confirmed) return { target: confirmed.target, score: 1, source: 'admin' };
+  // 2. Table d'alias manuelle
+  if(DLIVE_ALIASES[key]) return { target: DLIVE_ALIASES[key], score: 0.95, source: 'alias' };
+  // 3. Match exact (clé normalisée identique)
+  const exact = myChannels.find(ch => normKey(ch.name) === key);
+  if(exact) return { target: exact.name, score: 0.9, source: 'exact' };
+  // 4. Fuzzy avec seuil 0.75 — bonus si les deux mentionnent "france"/"fr"
+  //    (départage entre versions du même nom pour différents pays)
+  const dliveIsFr = /france|\bfr\b/i.test(dliveName);
+  let best = null;
+  myChannels.forEach(ch => {
+    let score = similarity(dliveName, ch.name);
+    if(dliveIsFr && /france|\bfr\b/i.test(ch.name)) score = Math.min(1, score + 0.05);
+    if(!best || score > best.score) best = { target: ch.name, score, source: 'fuzzy' };
+  });
+  if(best && best.score >= 0.75) return best;
+  return null;
+}
+
+// ─── Récupère les N meilleurs candidats (pour la validation admin) ───
+function topChannelCandidates(dliveName, myChannels, n=3){
+  return myChannels
+    .map(ch => ({ target: ch.name, score: similarity(dliveName, ch.name) }))
+    .sort((a,b) => b.score - a.score)
+    .slice(0, n);
+}
+
+// ─── Matching d'un event dlive ("TeamA vs TeamB") vers un de mes matchs ───
+function parseDliveEventTeams(title){
+  const parts = (title||'').split(/\s+(?:vs\.?|v\.|-|–)\s+/i);
+  if(parts.length !== 2) return null;
+  return { a: parts[0].trim(), b: parts[1].trim() };
+}
+function matchEvent(dliveEvent, myMatches){
+  const title = dliveEvent.event_name || dliveEvent.name || dliveEvent.title || '';
+  const key = normKey(title);
+  const confirmed = dliveMappingConfirmed.events[key];
+  if(confirmed){
+    const m = myMatches.find(mm => String(mm.id) === confirmed.target);
+    if(m) return { match: m, score: 1, source: 'admin' };
+  }
+  // Filtre catégorie : uniquement football (si le champ existe) — sinon on
+  // se rabat sur le parsing d'équipes qui filtrera naturellement le bruit
+  // (ex: "Big Brother 27 Live Cam" ne matchera aucune équipe).
+  const cat = (dliveEvent.category || dliveEvent.sport || '').toLowerCase();
+  if(cat && !cat.includes('foot') && !cat.includes('soccer')) return null;
+
+  const teams = parseDliveEventTeams(title);
+  if(!teams) return null;
+
+  let best = null;
+  const eventTime = dliveEvent.start_time ? new Date(dliveEvent.start_time).getTime() : null;
+  myMatches.forEach(m => {
+    const hn = m.homeTeam?.name||'', an = m.awayTeam?.name||'';
+    // Meilleur appariement dans les deux sens (a↔home,b↔away OU a↔away,b↔home)
+    const s1 = (similarity(teams.a,hn) + similarity(teams.b,an)) / 2;
+    const s2 = (similarity(teams.a,an) + similarity(teams.b,hn)) / 2;
+    const teamScore = Math.max(s1,s2);
+    let dateScore = 0.5; // neutre si pas d'horaire exploitable
+    if(eventTime && m.utcDate){
+      const diffH = Math.abs(new Date(m.utcDate).getTime() - eventTime) / 3600000;
+      dateScore = diffH <= 3 ? 1 : Math.max(0, 1 - (diffH-3)/12);
+    }
+    const bonus = (teamScore > 0.9 && dateScore === 1) ? 0.1 : 0;
+    const score = teamScore*0.7 + dateScore*0.2 + bonus;
+    if(!best || score > best.score) best = { match: m, score, source: 'fuzzy' };
+  });
+  if(best && best.score >= 0.7) return best;
+  return null;
+}
+function topEventCandidates(dliveEvent, myMatches, n=3){
+  const title = dliveEvent.event_name || dliveEvent.name || dliveEvent.title || '';
+  const teams = parseDliveEventTeams(title);
+  if(!teams) return [];
+  return myMatches.map(m => {
+    const hn = m.homeTeam?.name||'', an = m.awayTeam?.name||'';
+    const s1 = (similarity(teams.a,hn) + similarity(teams.b,an)) / 2;
+    const s2 = (similarity(teams.a,an) + similarity(teams.b,hn)) / 2;
+    return { target: String(m.id), label: hn+' - '+an, score: Math.max(s1,s2) };
+  }).sort((a,b)=>b.score-a.score).slice(0,n);
+}
+
+// ─── Sync complète : récupère dlive, applique ce qui est fiable, empile le reste en attente ───
+async function syncDlive(){
+  await loadDliveMappings();
+  const [chRes, schRes] = await Promise.all([
+    fetch('/api/dlive/channels').then(r=>r.json()).catch(()=>({channels:[]})),
+    fetch('/api/dlive/schedule').then(r=>r.json()).catch(()=>({schedule:[]})),
+  ]);
+  const channels = chRes.channels||[];
+  const schedule = schRes.schedule||[];
+
+  const myChannels = TV_CHANNELS.map(c=>({id:c.id,name:c.name}));
+  const myMatches = Object.values(data.byDate||{}).flat();
+
+  dlivePendingChannels = [];
+  dlivePendingEvents = [];
+  let channelsMatched = 0, eventsMatched = 0;
+  const resolvedChannels = []; // {myChannelId, url, label, score}
+  const resolvedEvents = [];   // {matchId, url, label, score}
+
+  channels.forEach(ch => {
+    const name = ch.channel_name || ch.name;
+    const id = ch.channel_id || ch.id;
+    if(!name || !id) return;
+    const key = normKey(name);
+    if(dliveMappingIgnored['ch_'+key]) return;
+    const result = matchChannel(name, myChannels);
+    if(result){
+      const target = myChannels.find(c=>c.name===result.target);
+      if(target){
+        // Une même chaîne (ex. DAZN France) existe en plusieurs entrées chez
+        // dlive : on les garde TOUTES comme sources alternatives au lieu de
+        // n'en retenir qu'une. Plus de flux = plus de secours si l'un tombe.
+        resolvedChannels.push({ myChannelId: target.id, url: dliveUrl(id,'channel'), label: 'dlive · '+name, score: result.score });
+        channelsMatched++;
+        return;
+      }
+    }
+    // Pas de match fiable → proposé à la validation admin
+    dlivePendingChannels.push({ key:'ch_'+key, dliveName:name, dliveId:id, candidates: topChannelCandidates(name, myChannels) });
+  });
+
+  schedule.forEach(ev => {
+    const title = ev.event_name || ev.name || ev.title || '';
+    const id = ev.event_id || ev.id || ev.channel_id;
+    if(!title || !id) return;
+    const key = normKey(title);
+    if(dliveMappingIgnored['ev_'+key]) return;
+    const result = matchEvent(ev, myMatches);
+    if(result){
+      resolvedEvents.push({ matchId: String(result.match.id), url: dliveUrl(id,'event'), label: 'dlive · '+title, score: result.score });
+      eventsMatched++;
+      return;
+    }
+    const cat=(ev.category||ev.sport||'').toLowerCase();
+    if(cat && !cat.includes('foot') && !cat.includes('soccer')) return; // bruit non-foot, on n'encombre pas la validation admin
+    dlivePendingEvents.push({ key:'ev_'+key, dliveName:title, dliveId:id, candidates: topEventCandidates(ev, myMatches) });
+  });
+
+  applyDliveMatches(resolvedChannels, resolvedEvents);
+
+  dliveSyncMeta = {
+    lastSync: Date.now(),
+    channelsMatched, eventsMatched,
+    channelsPending: dlivePendingChannels.length,
+    eventsPending: dlivePendingEvents.length,
+  };
+  try{ localStorage.setItem('okin_dlive_sync_meta', JSON.stringify(dliveSyncMeta)); }catch(e){}
+}
+
+// ─── Ajoute les sources résolues sans jamais écraser l'existant ───
+const DLIVE_MAX_PER_TARGET = 6; // au-delà, le sélecteur devient illisible
+
+function applyDliveMatches(resolvedChannels, resolvedEvents){
+  // Regroupe par chaîne cible : dlive expose souvent la même chaîne (DAZN
+  // France, beIN…) en une dizaine d'entrées. On les garde toutes comme
+  // alternatives, numérotées et triées par score, plafonnées pour rester
+  // lisibles dans le sélecteur du lecteur.
+  const byChannel = new Map();
+  resolvedChannels.forEach(r => {
+    if(!byChannel.has(r.myChannelId)) byChannel.set(r.myChannelId, []);
+    byChannel.get(r.myChannelId).push(r);
+  });
+
+  byChannel.forEach((list, myChannelId) => {
+    list.sort((a,b) => (b.score||0)-(a.score||0));
+    const keep = list.slice(0, DLIVE_MAX_PER_TARGET);
+    if(!tvStreams[myChannelId]) tvStreams[myChannelId] = { sources: [] };
+    if(!tvStreams[myChannelId].sources) tvStreams[myChannelId].sources = tvStreams[myChannelId].url ? [{url:tvStreams[myChannelId].url,label:tvStreams[myChannelId].label||'Source 1'}] : [];
+    keep.forEach((r, n) => {
+      const already = tvStreams[myChannelId].sources.find(s=>s.url===r.url);
+      if(already) return;
+      // Numérotation quand il y a plusieurs flux pour la même chaîne
+      const lbl = keep.length > 1 ? ('dlive #'+(n+1)) : r.label;
+      tvStreams[myChannelId].sources.push({ url: r.url, label: lbl, confidence: r.score, dlive:true });
+    });
+    tvStreams[myChannelId].updatedAt = Date.now();
+  });
+  resolvedEvents.forEach(({matchId,url,label,score}) => {
+    if(!streams[matchId]) streams[matchId] = { sources: [] };
+    if(!streams[matchId].sources) streams[matchId].sources = streams[matchId].url ? [{url:streams[matchId].url,label:streams[matchId].label||'Source 1'}] : [];
+    const already = streams[matchId].sources.find(s=>s.url===url);
+    if(!already) streams[matchId].sources.push({ url, label, confidence: score, dlive:true });
+    streams[matchId].updatedAt = Date.now();
+  });
+  try{
+    localStorage.setItem('okin_tv_streams', JSON.stringify(tvStreams));
+    localStorage.setItem('okin_streams', JSON.stringify(streams));
+  }catch(e){}
+  if(db){
+    resolvedChannels.forEach(({myChannelId}) => db.ref('tv_streams/'+myChannelId).set(tvStreams[myChannelId]).catch(()=>{}));
+    resolvedEvents.forEach(({matchId}) => db.ref('streams/'+matchId).set(streams[matchId]).catch(()=>{}));
+  }
+  applyStreams(); renderContent();
+}
+
+// ─── Validation admin : confirme un mapping (sauvegardé pour toujours) ───
+function confirmDliveMapping(kind, key, dliveName, dliveId, target){
+  const path = 'dlive_mapping/'+(kind==='channel'?'channels':'events')+'/'+key;
+  const data = { target, confirmedBy: currentUser?.uid||'admin', ts: Date.now() };
+  if(db) db.ref(path).set(data).catch(()=>{});
+  if(kind==='channel') dliveMappingConfirmed.channels[key]=data; else dliveMappingConfirmed.events[key]=data;
+  const url = dliveUrl(dliveId, kind);
+  if(kind==='channel'){
+    if(!tvStreams[target]) tvStreams[target]={sources:[]};
+    if(!tvStreams[target].sources) tvStreams[target].sources=[];
+    tvStreams[target].sources.push({url,label:'dlive · '+dliveName,confidence:1,dlive:true});
+    tvStreams[target].updatedAt=Date.now();
+    try{localStorage.setItem('okin_tv_streams',JSON.stringify(tvStreams));}catch(e){}
+    if(db) db.ref('tv_streams/'+target).set(tvStreams[target]).catch(()=>{});
+  } else {
+    if(!streams[target]) streams[target]={sources:[]};
+    if(!streams[target].sources) streams[target].sources=[];
+    streams[target].sources.push({url,label:'dlive · '+dliveName,confidence:1,dlive:true});
+    streams[target].updatedAt=Date.now();
+    try{localStorage.setItem('okin_streams',JSON.stringify(streams));}catch(e){}
+    if(db) db.ref('streams/'+target).set(streams[target]).catch(()=>{});
+  }
+  dlivePendingChannels = dlivePendingChannels.filter(p=>p.key!==key);
+  dlivePendingEvents = dlivePendingEvents.filter(p=>p.key!==key);
+  applyStreams(); renderContent();
+  toast('✅ Mapping confirmé');
+  if(adminOpen) renderAdminPanel();
+}
+function ignoreDliveMapping(key){
+  if(db) db.ref('dlive_mapping/ignored/'+key).set({ts:Date.now(),by:currentUser?.uid||'admin'}).catch(()=>{});
+  dliveMappingIgnored[key]={ts:Date.now()};
+  dlivePendingChannels = dlivePendingChannels.filter(p=>p.key!==key);
+  dlivePendingEvents = dlivePendingEvents.filter(p=>p.key!==key);
+  toast('🚫 Ignoré');
+  if(adminOpen) renderAdminPanel();
+}
+// ═══════════════════════════════════════════════════════════════
+// ── FLS — FOOTBALL LIVE STREAM API : assignation intelligente ───
+//
+//  Même philosophie que dlive : l'API ne sert QUE de source de flux, jamais
+//  de source de données (scores/compos restent football-data + FlashScore).
+//  On devine automatiquement à quel match de NOTRE grille correspond chaque
+//  match FLS, et les cas douteux partent en validation admin.
+//
+//  ⚠️  QUOTA : ~50 appels/jour côté RapidAPI. D'où la règle d'or de ce
+//  module : **assigner une source ne coûte RIEN**. L'URL posée sur le match
+//  est `/api/fls/play/<id>.m3u8`, une route de NOTRE serveur. L'appel payant
+//  /link/{id} n'a lieu que si quelqu'un lance vraiment la lecture, et son
+//  résultat est mis en cache serveur puis partagé par tous les spectateurs.
+//  Conséquence : 200 matchs assignés = 0 appel ; 3 matchs regardés = 3 appels.
+//
+//  Rien n'écrase jamais une source posée à la main : FLS s'ajoute toujours
+//  en alternative dans le sélecteur de sources.
+// ═══════════════════════════════════════════════════════════════
+
+const FLS_AUTO_THRESHOLD    = 0.80; // au-dessus : assignation automatique
+const FLS_PENDING_THRESHOLD = 0.50; // entre les deux : validation admin
+const FLS_TEAM_FLOOR        = 0.58; // en dessous : ce n'est pas le même match, point
+const FLS_SYNC_INTERVAL     = 10 * 60 * 1000; // le serveur sert du cache : gratuit
+
+let flsMatches = [];   // liste brute renvoyée par /api/fls/matches
+let flsQuota   = null; // {limit, used, left, linkLeft, resetAt, enabled, mode}
+let flsSyncMeta = { lastSync: 0, serverSync: 0, matched: 0, pending: 0, total: 0, error: null };
+let flsPending = [];   // [{key, flsId, title, league, kickoff, candidates:[...]}]
+let flsMappingConfirmed = {}; // depuis Firebase /fls_mapping/events
+let flsMappingIgnored   = {};
+const _flsResolved = {}; // flsId -> résultat du préflight, évite de retaper le serveur
+
+// ─── URL de lecture : route locale, résolue paresseusement côté serveur ───
+// L'extension .m3u8 est indispensable : isEmbedUrl() s'en sert pour choisir
+// le lecteur natif plutôt qu'une iframe.
+function flsPlayUrl(id){ return '/api/fls/play/' + encodeURIComponent(id) + '.m3u8'; }
+
+async function loadFlsMappings(){
+  if(!db) return;
+  try{
+    const [evSnap, ignSnap] = await Promise.all([
+      db.ref('fls_mapping/events').once('value'),
+      db.ref('fls_mapping/ignored').once('value'),
+    ]);
+    flsMappingConfirmed = evSnap.val() || {};
+    flsMappingIgnored   = ignSnap.val() || {};
+  }catch(e){ console.error('[fls] chargement mappings échoué', e.message); }
+}
+
+// ─── Similarité pour UNE équipe ───
+// On compare le nom FLS au nom long ET au nom court, et on garde le meilleur :
+// « Marseille » colle à shortName, « Paris Saint Germain » colle au nom long,
+// et une moyenne bête sur un seul des deux ratait un match sur deux.
+// La distance d'édition seule ne voit pas non plus l'inclusion : « Marseille »
+// dans « Olympique de Marseille », c'est pourtant la même équipe.
+function flsTeamSim(name, m, side){
+  const full  = (side === 'home' ? m.homeTeam?.name : m.awayTeam?.name) || '';
+  const short = (side === 'home' ? m.homeTeam?.shortName : m.awayTeam?.shortName) || full;
+  const na = normKey(name);
+  let best = 0;
+  [full, short].forEach(cand => {
+    if(!cand) return;
+    let s = similarity(name, cand);
+    const nc = normKey(cand);
+    if(na && nc && (na.includes(nc) || nc.includes(na))){
+      const ratio = Math.min(na.length, nc.length) / Math.max(na.length, nc.length);
+      s = Math.max(s, 0.80 + 0.20 * ratio);
+    }
+    if(s > best) best = s;
+  });
+  return best;
+}
+
+// ─── Score d'appariement entre un match FLS et un de nos matchs ───
+// teamScore domine : deux matchs à la même heure dans la même compétition
+// restent deux matchs différents si les équipes ne collent pas.
+function flsPairScore(f, m){
+  // Garde-fou horaire AVANT tout : « Liverpool - Arsenal » existe aussi le
+  // mois prochain. Sans ce filtre, un flux d'un autre jour se collait sur le
+  // match d'aujourd'hui avec un score parfait côté équipes.
+  let dateScore = 0.5; // neutre si l'API ne donne pas d'horaire exploitable
+  const t = f.kickoff ? new Date(f.kickoff).getTime() : NaN;
+  if(!isNaN(t) && m.utcDate){
+    const diffH = Math.abs(new Date(m.utcDate).getTime() - t) / 3600000;
+    if(diffH > 6) return { teamScore: 0, score: 0 };
+    dateScore = diffH <= 2 ? 1 : Math.max(0, 1 - (diffH - 2) / 4);
+  }
+
+  const direct  = (flsTeamSim(f.home, m, 'home') + flsTeamSim(f.away, m, 'away')) / 2;
+  // Certains fournisseurs inversent domicile/extérieur : on l'accepte, mais
+  // légèrement pénalisé pour que la bonne orientation gagne à égalité.
+  const swapped = (flsTeamSim(f.home, m, 'away') + flsTeamSim(f.away, m, 'home')) / 2 * 0.98;
+  const teamScore = Math.max(direct, swapped);
+
+  const leagueBonus = (f.league && m._cname && similarity(f.league, m._cname) > 0.6) ? 0.05 : 0;
+  return { teamScore, score: Math.min(1, teamScore * 0.75 + dateScore * 0.25 + leagueBonus) };
+}
+
+// Périmètre de comparaison : uniquement les matchs proches dans le temps.
+// Inutile (et coûteux en Levenshtein) de comparer un flux du soir à un match
+// de la semaine prochaine.
+function flsCandidateMatches(){
+  const now = Date.now();
+  return Object.values(data.byDate || {}).flat().filter(m => {
+    if(!m.utcDate) return true;
+    const d = new Date(m.utcDate).getTime();
+    return d > now - 6 * 3600000 && d < now + 36 * 3600000;
+  });
+}
+
+function flsKey(f){ return normKey(f.home + '_' + f.away) + '_' + (f.id || ''); }
+
+function flsMatchOne(f, myMatches){
+  const key = flsKey(f);
+  const confirmed = flsMappingConfirmed[key];
+  if(confirmed){
+    const m = myMatches.find(mm => String(mm.id) === String(confirmed.target));
+    if(m) return { match: m, score: 1, source: 'admin' };
+  }
+  let best = null;
+  myMatches.forEach(m => {
+    const r = flsPairScore(f, m);
+    if(r.teamScore < FLS_TEAM_FLOOR) return;
+    if(!best || r.score > best.score) best = { match: m, score: r.score, source: 'auto' };
+  });
+  return best;
+}
+
+function flsTopCandidates(f, myMatches, n = 3){
+  return myMatches
+    .map(m => {
+      const r = flsPairScore(f, m);
+      return { target: String(m.id), label: (m.homeTeam?.shortName||m.homeTeam?.name||'?') + ' - ' + (m.awayTeam?.shortName||m.awayTeam?.name||'?'), score: r.score };
+    })
+    // Un candidat à 0 a été rejeté par le garde-fou horaire : le proposer à
+    // l'admin ne ferait que l'inciter à valider une erreur.
+    .filter(c => c.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, n);
+}
+
+// ─── Sync : lit le cache serveur (gratuit) et réassigne les sources ───
+async function syncFls(){
+  await loadFlsMappings();
+  let payload;
+  try{
+    payload = await fetch('/api/fls/matches').then(r => r.json());
+  }catch(e){
+    flsSyncMeta.error = 'network';
+    return flsSyncMeta;
+  }
+  flsMatches = payload.matches || [];
+  flsQuota   = payload.quota || null;
+  flsSyncMeta.serverSync = payload.lastSync || 0;
+  flsSyncMeta.error = payload.error || null;
+
+  const myMatches = flsCandidateMatches();
+  const resolved = [];
+  flsPending = [];
+
+  flsMatches.forEach(f => {
+    if(!f || !f.id) return;
+    const key = flsKey(f);
+    if(flsMappingIgnored[key]) return;
+    const r = flsMatchOne(f, myMatches);
+    if(r && r.score >= FLS_AUTO_THRESHOLD){
+      resolved.push({ matchId: String(r.match.id), flsId: f.id, score: r.score, title: f.home + ' - ' + f.away });
+      return;
+    }
+    if(r && r.score >= FLS_PENDING_THRESHOLD){
+      flsPending.push({
+        key, flsId: f.id,
+        title: f.home + ' - ' + f.away,
+        league: f.league || '',
+        kickoff: f.kickoff || null,
+        candidates: flsTopCandidates(f, myMatches),
+      });
+    }
+    // En dessous du seuil « douteux » : ce match FLS ne concerne aucun match
+    // de notre grille (autre championnat, autre jour) — on l'ignore en
+    // silence plutôt que de noyer l'admin sous du bruit.
+  });
+
+  applyFlsMatches(resolved);
+
+  flsSyncMeta = Object.assign(flsSyncMeta, {
+    lastSync: Date.now(),
+    matched: resolved.length,
+    pending: flsPending.length,
+    total: flsMatches.length,
+  });
+  try{ localStorage.setItem('okin_fls_sync_meta', JSON.stringify(flsSyncMeta)); }catch(e){}
+  return flsSyncMeta;
+}
+
+// ─── Pose les sources résolues, sans jamais écraser l'existant ───
+function applyFlsMatches(resolved){
+  let changed = false;
+  const touched = [];
+  resolved.forEach(({ matchId, flsId, score, title }) => {
+    const url = flsPlayUrl(flsId);
+    if(!streams[matchId]) streams[matchId] = { sources: [] };
+    const s = streams[matchId];
+    // Migration douce de l'ancien format {url,label} vers {sources:[...]}
+    if(!s.sources) s.sources = s.url ? [{ url: s.url, label: s.label || 'Source 1' }] : [];
+    if(s.sources.some(x => x.url === url)) return;
+    s.sources.push({ url, label: 'FLS · HD', confidence: score, fls: true, flsId, flsTitle: title });
+    s.updatedAt = Date.now();
+    changed = true;
+    touched.push(matchId);
+  });
+  if(!changed) return;
+  try{ localStorage.setItem('okin_streams', JSON.stringify(streams)); }catch(e){}
+  // Écriture Firebase réservée aux admins : sinon chaque visiteur réécrirait
+  // les mêmes noeuds toutes les 10 minutes pour rien. Les autres profitent
+  // quand même des sources en local (l'assignation est déterministe).
+  if(db && isAdmin()) touched.forEach(id => db.ref('streams/' + id).set(streams[id]).catch(() => {}));
+  applyStreams();
+  renderContent();
+}
+
+// ─── Validation admin ───
+function confirmFlsMapping(key, flsId, matchId, title){
+  const rec = { target: String(matchId), flsId, confirmedBy: currentUser?.uid || 'admin', ts: Date.now() };
+  if(db) db.ref('fls_mapping/events/' + key).set(rec).catch(() => {});
+  flsMappingConfirmed[key] = rec;
+  applyFlsMatches([{ matchId: String(matchId), flsId, score: 1, title: title || '' }]);
+  flsPending = flsPending.filter(p => p.key !== key);
+  toast('✅ Source FLS assignée');
+  if(adminOpen) renderAdminPanel();
+}
+function ignoreFlsMapping(key){
+  if(db) db.ref('fls_mapping/ignored/' + key).set({ ts: Date.now(), by: currentUser?.uid || 'admin' }).catch(() => {});
+  flsMappingIgnored[key] = { ts: Date.now() };
+  flsPending = flsPending.filter(p => p.key !== key);
+  toast('🚫 Ignoré');
+  if(adminOpen) renderAdminPanel();
+}
+
+// ─── Préflight avant lecture ───
+// C'est ici — et NULLE PART ailleurs — qu'un appel payant peut partir.
+// On le fait avant de lancer le lecteur pour pouvoir afficher un vrai message
+// ("quota épuisé", "flux introuvable") au lieu d'un écran noir muet.
+async function flsPreflight(src){
+  if(!src || !src.fls || !src.flsId) return true;
+  const cached = _flsResolved[src.flsId];
+  if(cached && Date.now() - cached.ts < 5 * 60 * 1000) return cached.ok;
+  let r;
+  try{
+    r = await fetch('/api/fls/link?id=' + encodeURIComponent(src.flsId)).then(res => res.json());
+  }catch(e){
+    toast('❌ Source indisponible');
+    return false;
+  }
+  if(r && r.quota) flsQuota = r.quota;
+  _flsResolved[src.flsId] = { ok: !!r.ok, ts: Date.now() };
+  if(r.ok) return true;
+  if(r.error === 'quota_exhausted'){
+    const reset = r.quota?.resetAt ? new Date(r.quota.resetAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
+    toast('⏳ Quota de flux atteint' + (reset ? ' — retour à ' + reset : '') + ', essaie une autre source');
+  } else if(r.error === 'provider_blocked'){
+    toast('⛔ Fournisseur momentanément bloqué' + (r.quota?.blockedReason ? ' (' + r.quota.blockedReason + ')' : ''));
+  } else if(r.error === 'not_found'){
+    toast('❌ Ce flux n\'existe plus côté fournisseur');
+  } else if(r.error === 'no_key'){
+    toast('⚙️ Source non configurée');
+  } else {
+    toast('❌ Source indisponible');
+  }
+  return false;
+}
+
+// Sync périodique : gratuite (cache serveur), donc on peut être généreux.
+// Le serveur décide seul quand dépenser réellement un appel RapidAPI.
+function startFlsAutoSync(){
+  setTimeout(() => { syncFls().catch(() => {}); }, 4000);
+  setInterval(() => { if(pageVisible()) syncFls().catch(() => {}); }, FLS_SYNC_INTERVAL);
+}
+
 async function loadLiveData(){
   const res=await afFetch('/fixtures?live=all');if(!res?.response)return;
-  for(const f of res.response){const hn=f.teams?.home?.name,an=f.teams?.away?.name;if(!hn||!an)continue;const m=data.live.find(m=>{const mh=m.homeTeam.name||'',ma=m.awayTeam.name||'';return(mh===hn||mh.includes(hn)||hn.includes(mh))&&(ma===an||ma.includes(an)||an.includes(ma));});if(!m)continue;m._status=f.fixture?.status??null;if(f.goals?.home!=null)m.goals={home:f.goals.home,away:f.goals.away};}
+  for(const f of res.response){const m=data.live.find(m=>teamsFuzzyMatch(m,f));if(!m)continue;m._status=f.fixture?.status??null;if(f.fixture?.id)m._afFixtureId=f.fixture.id;if(f.goals?.home!=null)m.goals={home:f.goals.home,away:f.goals.away};noteMatchMinute(m);}
   renderTicker();renderContent();
   if(multiOpen)renderGrid();
+  // Rafraîchit la vue Détails du match actuellement ouvert, s'il est en direct
+  if(pl.match&&isLive(pl.match)&&streamTab){
+    loadDetails(pl.match,true);
+    if(detTab==='stats')loadMatchStats(pl.match,true);
+    if(detTab==='players')loadPlayersStats(pl.match,true);
+  }
 }
-setInterval(()=>{if(Date.now()-lastFetch>60000)loadMatches();},60000);
-setInterval(()=>{if(data.live.length)loadLiveData();},30000);
+
+// ═══════════════════════════════════════════════════
+// ── DÉTAILS — compos, terrain 2D, blessures, changements ──
+// Source PRINCIPALE : FlashScore (scraper via /api/fs, côté serveur).
+// Source BACKUP : api-sports.io (déjà en place, via /api/af).
+// Tant que /api/fs n'est pas configuré (FS_BASE vide côté serveur), il
+// répond 503 et on bascule automatiquement + silencieusement sur l'API backup.
+// ═══════════════════════════════════════════════════
+let streamTab='details';
+function switchStreamTab(tab){
+  streamTab=tab;
+  const bd=$('tab-btn-details'),bc=$('tab-btn-chat');
+  if(bd)bd.classList.toggle('on',tab==='details');
+  if(bc)bc.classList.toggle('on',tab==='chat');
+  const ds=$('details-section');if(ds)ds.style.display=tab==='details'?'':'none';
+  const cs=$('chat-section');if(cs)cs.style.display=tab==='chat'?'':'none';
+}
+
+const FS_PROJECT_ID_CLIENT='16'; // FlashScore France — confirmé par capture HAR réelle
+
+async function fsFetch(ep){
+  try{
+    const ctrl=new AbortController(),tid=setTimeout(()=>ctrl.abort(),12000);
+    const res=await fetch('/api/fs'+ep,{signal:ctrl.signal});
+    clearTimeout(tid);
+    if(!res.ok)return null; // 503 = scraper pas encore configuré → fallback silencieux
+    return await res.text();
+  }catch(e){return null;}
+}
+async function fsFeedFetch(ep){
+  try{
+    const ctrl=new AbortController(),tid=setTimeout(()=>ctrl.abort(),12000);
+    const res=await fetch('/api/fsfeed'+ep,{signal:ctrl.signal});
+    clearTimeout(tid);
+    if(!res.ok)return null;
+    return await res.text();
+  }catch(e){return null;}
+}
+function parseFsFeed(raw){
+  if(!raw)return null;
+  try{return JSON.parse(raw);}catch(e){}
+  try{
+    return raw.split('¬').map(seg=>{const i=seg.indexOf('÷');return i<0?null:{key:seg.slice(0,i),value:seg.slice(i+1)};}).filter(Boolean);
+  }catch(e){return null;}
+}
+// Format confirmé par capture HAR le 11/09/2026 sur global.flashscore.ninja
+// (/16/x/feed/f_1_0_2_fr_1) : texte délimité par blocs. Chaque bloc commence
+// juste après un '~' et démarre soit par "ZA÷" (en-tête de compétition, à
+// ignorer ici), soit par "AA÷" (un match). Dans un bloc match, les champs
+// utiles repérés : AA=eventId, AD=timestamp de coup d'envoi (secondes),
+// AE=nom équipe domicile, AF=nom équipe extérieur.
+function parseFsMatchList(raw){
+  if(!raw)return[];
+  const blocks=raw.split('~');
+  const matches=[];
+  for(const block of blocks){
+    if(!block.startsWith('AA÷'))continue;
+    const fields={};
+    block.split('¬').forEach(seg=>{
+      const i=seg.indexOf('÷');if(i<0)return;
+      const k=seg.slice(0,i);if(!(k in fields))fields[k]=seg.slice(i+1);
+    });
+    if(fields.AA)matches.push({
+      id:fields.AA,
+      kickoff:fields.AD?parseInt(fields.AD,10)*1000:null,
+      homeName:fields.AE||'',
+      awayName:fields.AF||'',
+    });
+  }
+  return matches;
+}
+// Cache des flux FlashScore par décalage de jour — le même flux servait à
+// résoudre chaque match, il était donc retéléchargé en boucle.
+const _fsFeedCache = new Map(); // dayOffset -> {list, ts}
+const FS_FEED_TTL = 3 * 60 * 1000; // 3 min : assez frais pour du live, assez long pour éviter le spam
+
+async function fsMatchListForOffset(offset){
+  const cached = _fsFeedCache.get(offset);
+  if(cached && Date.now() - cached.ts < FS_FEED_TTL) return cached.list;
+  // Dans f_1_{offset}_2_fr_1, le 2e segment est le décalage en jours par
+  // rapport à aujourd'hui (0 = aujourd'hui, -1 = hier, 1 = demain).
+  const raw = await fsFeedFetch(`/16/x/feed/f_1_${offset}_2_fr_1`);
+  const list = parseFsMatchList(raw);
+  _fsFeedCache.set(offset, {list, ts: Date.now()});
+  return list;
+}
+
+// Décalage en jours entre la date du match et aujourd'hui (fuseau local)
+function fsDayOffsetFor(m){
+  if(!m.utcDate) return 0;
+  const d = new Date(m.utcDate); d.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  return Math.round((d - today) / 86400000);
+}
+
+async function resolveFsMatchId(m){
+  if(m._fsMatchId) return m._fsMatchId;
+  if(m._fsMatchIdMiss) return null; // déjà cherché sans succès : on ne retente pas à chaque refresh
+
+  // BUG corrigé : on n'interrogeait QUE le flux du jour (offset 0), donc tout
+  // match d'hier/demain (ou d'un autre jour affiché) ne matchait jamais — d'où
+  // "ça marche sur certains matchs et pas sur d'autres".
+  const base = fsDayOffsetFor(m);
+  // On tente le jour du match, puis les jours adjacents : un match tard le soir
+  // peut être rangé côté FlashScore sur le jour suivant selon le fuseau.
+  const offsets = [base, base - 1, base + 1];
+
+  const kickoff = m.utcDate ? new Date(m.utcDate).getTime() : null;
+
+  for(const off of offsets){
+    if(off < -7 || off > 7) continue; // au-delà, FlashScore ne sert plus rien d'utile
+    let list = [];
+    try{ list = await fsMatchListForOffset(off); }catch(e){ continue; }
+    if(!list.length) continue;
+
+    // 1) Correspondance sur les deux équipes (cas normal)
+    let match = list.find(f => teamsFuzzyMatch(m, {teams:{home:{name:f.homeName}, away:{name:f.awayName}}}));
+
+    // 2) Repêchage : une seule équipe reconnue MAIS coup d'envoi à moins de
+    //    30 min d'écart. Rattrape les graphies trop différentes d'un côté
+    //    (ex. "Inter" vs "Internazionale") sans ouvrir la porte aux faux
+    //    positifs, puisque l'horaire doit coller.
+    if(!match && kickoff){
+      const nMh = normTeamName(m.homeTeam?.name||''), nMa = normTeamName(m.awayTeam?.name||'');
+      match = list.find(f => {
+        if(!f.kickoff || Math.abs(f.kickoff - kickoff) > 30*60*1000) return false;
+        const nFh = normTeamName(f.homeName), nFa = normTeamName(f.awayName);
+        const homeOk = nFh && nMh && (nFh.includes(nMh) || nMh.includes(nFh));
+        const awayOk = nFa && nMa && (nFa.includes(nMa) || nMa.includes(nFa));
+        return homeOk || awayOk;
+      });
+    }
+
+    if(match){ m._fsMatchId = match.id; return match.id; }
+  }
+
+  m._fsMatchIdMiss = true;
+  return null;
+}
+async function resolveAfFixtureId(m){
+  if(m._afFixtureId)return m._afFixtureId;
+  const d=(m.utcDate||'').split('T')[0];if(!d)return null;
+  const res=await afFetch('/fixtures?date='+d);if(!res?.response)return null;
+  const f=res.response.find(f=>teamsFuzzyMatch(m,f));
+  if(f?.fixture?.id){m._afFixtureId=f.fixture.id;return f.fixture.id;}
+  return null;
+}
+
+// ─── Normalisation vers un schéma commun, quelle que soit la source ───
+// team: {name, formation, starting:[player], substitutes:[player]}
+// player: {id,name,number,position,grid,photo,age,nationality,height,foot}
+// Les deux passent par /api/img côté serveur — FlashScore bloque le
+// hotlinking direct (image cassée) sans le bon header Referer, d'où le
+// bug "aucune photo ne s'affiche" repéré sur le match Union Berlin.
+function luPlayerPhotoAF(playerId){return playerId?`/api/img?u=${encodeURIComponent(`https://media.api-sports.io/football/players/${playerId}.png`)}`:null;}
+// FlashScore fournit plusieurs variantes par joueur (variantType 81 à 86 vus
+// en capture). Pas de doc officielle sur laquelle est la plus grande — 86
+// (la dernière observée) est utilisée en priorité ; si absente on retombe
+// sur la première disponible. À ajuster si ça se révèle être l'inverse.
+function fsPlayerImagePath(images){
+  if(!images?.length)return null;
+  const preferred=images.find(im=>im.variantType===86)||images.find(im=>im.variantType===85)||images[images.length-1];
+  return preferred?.path||null;
+}
+function fsImg(path){return path?`/api/img?u=${encodeURIComponent(`https://static.flashscore.com/res/image/data/${path}`)}`:null;}
+
+// Mapping confirmé par capture HAR réelle du 10/09/2026 (endpoint _hash=dplie
+// pour les compos, _hash=dmpe2 pour les blessés/absents). Format GraphQL JSON
+// propre — pas le format délimité qu'on redoutait.
+async function fetchFromFlashScore(m){
+  const fsId=await resolveFsMatchId(m);
+  if(!fsId)throw new Error('fs_no_match_id');
+  const[luRaw,injRaw]=await Promise.all([
+    // dlie2 confirmé par capture HAR le 11/09/2026 : compos CONFIRMÉES (pas
+    // juste "probables"), avec groupes STARTERS/SUBSTITUTES explicites, une
+    // note par joueur (rating) et un champ incidents (cartons/changements —
+    // structure exacte pas encore vue en vrai sur un match avec cartons,
+    // parsing défensif ci-dessous à ajuster si besoin).
+    fsFetch(`/pq_graphql?_hash=dlie2&eventId=${fsId}&projectId=${FS_PROJECT_ID_CLIENT}`),
+    fsFetch(`/pq_graphql?_hash=dmpe2&eventId=${fsId}&projectId=${FS_PROJECT_ID_CLIENT}`),
+  ]);
+  const luData=parseFsFeed(luRaw)?.data?.findEventById;
+  if(!luData)throw new Error('fs_no_lineups');
+
+  const allEvents=[];
+  const mapTeam=(part,side)=>{
+    const L=part?.lineup||part?.predictedLineup; // lineup = confirmée, predictedLineup = avant match
+    if(!L)return null;
+    const rows=L.formation?.lines?.[0]?.rows||[];
+    const gridByPlayer={};
+    rows.forEach((row,ri)=>row.playerIds.forEach((pid,ci)=>{gridByPlayer[pid]=`${ri+1}:${ci+1}`;}));
+    const starterGroup=(L.groups||[]).find(g=>/STARTER/i.test(g.groupType||''));
+    const subGroup=(L.groups||[]).find(g=>/SUB/i.test(g.groupType||''));
+    const starterIds=new Set(starterGroup?.playerIds||rows.flatMap(r=>r.playerIds));
+    const allPlayers=(L.players||[]).map(p=>{
+      // Structure confirmée par capture HAR le 11/09/2026 (exemple réel : un
+      // but + une passe décisive) : chaque incident est enveloppé dans un
+      // objet {__typename, incident:{id, playerId, minute, reasons, isHidden}}.
+      // __typename vu en vrai : "EventIncidentGoal", "EventIncidentAssistance".
+      // Cartons/changements pas encore observés en vrai — détection par
+      // correspondance sur __typename/reasons, à confirmer dès qu'un exemple
+      // réel apparaît dans une capture.
+      (p.incidents||[]).forEach(inc=>{
+        const typ=(inc.__typename||'').toLowerCase();
+        const reasons=(inc.incident?.reasons||[]).join(' ').toLowerCase();
+        const minute=parseInt(inc.incident?.minute)||null; // ex: "11'" → 11
+        let type=null;
+        if(typ.includes('card')||reasons.includes('card')){
+          type=(typ.includes('red')||reasons.includes('red'))?'red':'yellow';
+        }else if(typ.includes('sub')){
+          type='sub';
+        }
+        // Les buts (EventIncidentGoal/Assistance) ne créent pas de badge ici :
+        // déjà affichés via modal-evs (buts) plus haut dans la modale.
+        if(type)allEvents.push({
+          minute,type,team:side,
+          playerOutId:p.id,playerOutName:p.listName||p.fieldName,
+          playerInName:null,
+        });
+      });
+      return{
+        id:p.id,name:p.listName||p.fieldName,number:p.number,
+        position:p.playerRoles?.[0]?.title||null,
+        grid:gridByPlayer[p.id]||null,
+        photo:fsImg(fsPlayerImagePath(p.images)),
+        age:p.age,height:p.height?p.height+' cm':null,
+        nationality:null,foot:null,
+        marketValue:p.marketValue,rating:p.rating??p.averageRating,
+        bioUrl:p.participant?.url||null,
+      };
+    });
+    return{
+      name:part.name,
+      formation:L.formation?.name||null,
+      starting:allPlayers.filter(p=>starterIds.has(p.id)),
+      substitutes:allPlayers.filter(p=>!starterIds.has(p.id)),
+    };
+  };
+  const homePart=luData.eventParticipants?.find(p=>p.type?.side==='HOME');
+  const awayPart=luData.eventParticipants?.find(p=>p.type?.side==='AWAY');
+  const home=mapTeam(homePart,'home'),away=mapTeam(awayPart,'away');
+  if(!home?.starting?.length&&!away?.starting?.length)throw new Error('fs_empty_lineups');
+
+  const injData=parseFsFeed(injRaw)?.data?.findEventById;
+  const injuries=[];
+  (injData?.eventParticipants||[]).forEach(part=>{
+    (part.lineup?.missingPlayers||[]).forEach(mp=>{
+      injuries.push({name:mp.player?.listName||mp.player?.name,team:mp.player?.teamName,reason:mp.reason});
+    });
+  });
+
+  return{home,away,events:allEvents,injuries,source:'fs'};
+}
+
+async function fetchFromBackupApi(m){
+  const fixtureId=await resolveAfFixtureId(m);
+  if(!fixtureId)throw new Error('af_no_fixture_id');
+  const[luRes,evRes]=await Promise.all([
+    afFetch('/fixtures/lineups?fixture='+fixtureId),
+    afFetch('/fixtures/events?fixture='+fixtureId),
+  ]);
+  const lineups=luRes?.response||[];
+  if(!lineups.length)throw new Error('af_empty_lineups');
+  const home=lineups.find(l=>teamsFuzzyMatch(m,{teams:{home:l.team,away:{name:''}}}))||lineups[0];
+  const away=lineups.find(l=>l!==home)||lineups[1];
+  const mapTeam=(l)=>l&&({
+    name:l.team?.name||'',formation:l.formation||null,
+    starting:(l.startXI||[]).map(({player})=>({id:player.id,name:player.name,number:player.number,position:player.pos,grid:player.grid,photo:luPlayerPhotoAF(player.id)})),
+    substitutes:(l.substitutes||[]).map(({player})=>({id:player.id,name:player.name,number:player.number,position:player.pos,photo:luPlayerPhotoAF(player.id)})),
+  });
+  const events=(evRes?.response||[]).filter(e=>e.type==='Card'||e.type==='subst').map(e=>({
+    minute:e.time?.elapsed,
+    type:e.type==='Card'?(/red/i.test(e.detail||'')?'red':'yellow'):'sub',
+    team:teamsFuzzyMatch(m,{teams:{home:e.team,away:{name:''}}})?'home':'away',
+    playerOutId:e.type==='subst'?e.assist?.id:e.player?.id,
+    playerOutName:e.type==='subst'?(e.assist?.name||'?'):(e.player?.name||'?'),
+    playerInName:e.type==='subst'?(e.player?.name||'?'):null,
+  }));
+  return{home:mapTeam(home),away:mapTeam(away),events,injuries:[],source:'af'};
+}
+
+async function loadDetails(m,silentRefresh){
+  const sec=$('details-section'),loading=$('lu-loading'),pitch=$('lu-pitch'),evWrap=$('lu-events'),benchWrap=$('lu-benches'),fWrap=$('lu-formations'),injWrap=$('lu-injuries'),noteEl=$('det-source-note');
+  if(!sec)return;
+  if(!silentRefresh){loading.style.display='flex';evWrap.innerHTML='';benchWrap.innerHTML='';injWrap.innerHTML='';fWrap.textContent='';noteEl.style.display='none';
+    pitch.querySelectorAll('.lu-player,.lu-box-home,.lu-box-away').forEach(e=>e.remove());}
+  let result=null,usedFallback=false;
+  try{ result=await fetchFromFlashScore(m); }
+  catch(e){
+    usedFallback=true;
+    try{ result=await fetchFromBackupApi(m); }
+    catch(e2){ result=null; }
+  }
+  if(!silentRefresh)loading.style.display='none';
+  if(!result){ evWrap.innerHTML='<div class="lu-empty">Compositions pas encore disponibles pour ce match.</div>'; return; }
+  if(usedFallback){ noteEl.style.display='';noteEl.textContent='Données de secours (API) — FlashScore momentanément indisponible'; }
+  fWrap.textContent=`${result.home?.formation||'—'} · ${result.away?.formation||'—'}`;
+  renderPitch(result.home,result.away,pitch,result.source);
+  renderInjuries(result.injuries,injWrap);
+  renderEventsAndHighlight(result.events,m,evWrap);
+  renderBenches(result.home,result.away,benchWrap,result.source);
+}
+
+function computeRowCounts(startXI){
+  const rowCounts={},rows=new Set();
+  startXI.forEach(p=>{const row=Number((p.grid||'1:1').split(':')[0]);rows.add(row);rowCounts[row]=(rowCounts[row]||0)+1;});
+  return{count:rows.size||1,rowCounts};
+}
+function gridToXY(grid,isHome,maxRow){
+  if(!grid)return{x:50,y:isHome?85:15};
+  const[row,col]=grid.split(':').map(Number);
+  const colsInRow=maxRow.rowCounts[row]||1;
+  const x=(col/(colsInRow+1))*100;
+  const span=44;
+  const y=isHome?(94-((row-1)/(maxRow.count-1||1))*span):(6+((row-1)/(maxRow.count-1||1))*span);
+  return{x,y};
+}
+function ratingColor(r){
+  if(r==null||r==='')return null;
+  const v=parseFloat(r);if(isNaN(v))return null;
+  if(v>=9)return'#3b8bff'; // bleu — homme du match, comme sur FlashScore
+  if(v>=7.5)return'#22c55e'; // vert
+  if(v>=6)return'#f5a623'; // orange
+  return'#e5484d'; // rouge
+}
+function renderPitch(home,away,pitch,source){
+  pitch.querySelectorAll('.lu-player,.lu-box-home,.lu-box-away').forEach(e=>e.remove());
+  const boxHome=document.createElement('div');boxHome.className='lu-box-home';pitch.appendChild(boxHome);
+  const boxAway=document.createElement('div');boxAway.className='lu-box-away';pitch.appendChild(boxAway);
+  [{team:home,isHome:true},{team:away,isHome:false}].forEach(({team,isHome})=>{
+    if(!team?.starting?.length)return;
+    const maxRow=computeRowCounts(team.starting);
+    team.starting.forEach(player=>{
+      const{x,y}=gridToXY(player.grid,isHome,maxRow);
+      const el=document.createElement('button');
+      el.type='button';
+      el.className='lu-player'+(isHome?'':' away');
+      el.style.left=x+'%';el.style.top=y+'%';
+      el.dataset.playerId=player.id;
+      const initials=abbr(player.name);
+      const rColor=ratingColor(player.rating);
+      const ratingBadge=rColor?`<div class="lu-player-rating" style="background:${rColor}">${parseFloat(player.rating).toFixed(1)}</div>`:'';
+      // Les badges (numéro, note, cartons) sont des FRÈRES de .lu-player-photo,
+      // pas des enfants : .lu-player-photo a overflow:hidden pour arrondir la
+      // photo, ce qui rognait les badges À L'INTÉRIEUR du cercle et masquait le
+      // visage. Le wrapper .lu-player-avatar n'a pas d'overflow, les badges
+      // débordent donc correctement à l'extérieur.
+      // SÉCURITÉ : nom/photo viennent de FlashScore (source externe) — échappés
+      // avant injection. Le onerror inline a été retiré : il concaténait les
+      // initiales dans du JS, ce qui était injectable via un nom piégé.
+      const safePhoto = player.photo ? safeUrl(player.photo) || (String(player.photo).startsWith('/api/img?') ? player.photo : '') : '';
+      el.innerHTML=`<div class="lu-player-avatar"><div class="lu-player-photo">${safePhoto?`<img src="${escHtml(safePhoto)}" loading="lazy" alt="">`:`<div class="lu-pi">${escHtml(initials)}</div>`}</div><div class="lu-player-num">${escHtml(String(player.number??''))}</div>${ratingBadge}</div><div class="lu-player-name">${escHtml(player.name||'')}</div>`;
+      // Repli sur les initiales si la photo ne charge pas (remplace le onerror inline)
+      const imgEl = el.querySelector('.lu-player-photo img');
+      if(imgEl) imgEl.addEventListener('error', function(){
+        const holder = this.parentNode;
+        this.remove();
+        if(!holder.querySelector('.lu-pi')){
+          const d = document.createElement('div');
+          d.className = 'lu-pi';
+          d.textContent = initials;
+          holder.appendChild(d);
+        }
+      });
+      el.onclick=()=>openPlayerBio(player,isHome?home.name:away.name,source);
+      pitch.appendChild(el);
+    });
+  });
+}
+function renderBenches(home,away,wrap,source){
+  const block=(team,label)=>{
+    if(!team?.substitutes?.length)return'';
+    return`<div class="lu-bench-title">${label} — Remplaçants</div><div class="lu-bench-list">${team.substitutes.map(player=>{
+      const initials=abbr(player.name);
+      return`<button type="button" class="lu-bench-player" data-player-id="${player.id}" onclick='openPlayerBio(${JSON.stringify(player).replace(/'/g,"&#39;")},${JSON.stringify(team.name)},${JSON.stringify(source)})'><div class="lu-bench-photo">${player.photo?`<img src="${player.photo}" loading="lazy" onerror="this.style.display='none'">`:`<div class="lu-pi">${initials}</div>`}</div><span class="lu-bench-num">${player.number??''}</span><span class="lu-bench-name">${player.name||''}</span></button>`;
+    }).join('')}</div>`;
+  };
+  wrap.innerHTML=block(home,home?.name||'Domicile')+block(away,away?.name||'Extérieur');
+}
+function renderInjuries(list,wrap){
+  if(!list?.length){wrap.innerHTML='';return;}
+  wrap.innerHTML=`<div class="lu-injuries-title">Absents / Blessés</div>`+list.map(p=>
+    `<div class="lu-injury-row"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M11 15h2v2h-2zm0-8h2v6h-2zm.99-5C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"/></svg><div><div class="lu-injury-name">${p.name||'?'}</div><div class="lu-injury-reason">${p.team||''}${p.reason?' · '+p.reason:''}</div></div></div>`
+  ).join('');
+}
+function renderEventsAndHighlight(events,m,wrap){
+  if(!m._seenLuEvents)m._seenLuEvents=new Set();
+  wrap.innerHTML=events.length?events.slice().reverse().map(e=>{
+    const icon=e.type==='sub'
+      ?`<div class="lu-ev-icon sub"><svg viewBox="0 0 24 24" fill="currentColor" width="9" height="9"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg></div>`
+      :`<div class="lu-ev-icon ${e.type}"></div>`;
+    const text=e.type==='sub'?`${e.playerInName||'?'} ↔ ${e.playerOutName||'?'}`:(e.playerOutName||'?');
+    const sub=e.type==='sub'?'Changement':e.type==='red'?'Carton rouge':'Carton jaune';
+    return`<div class="lu-ev-row"><span class="lu-ev-min">${e.minute??''}'</span>${icon}<div><div class="lu-ev-text">${text}</div><div class="lu-ev-sub">${sub}</div></div></div>`;
+  }).join(''):'';
+
+  events.forEach(e=>{
+    const key=`${e.minute}-${e.type}-${e.playerOutId}`;
+    if(m._seenLuEvents.has(key))return;
+    m._seenLuEvents.add(key);
+    const targetEl=e.playerOutId?document.querySelector(`.lu-player[data-player-id="${e.playerOutId}"]`):null;
+    if(!targetEl)return;
+    targetEl.classList.add('lu-new-event');
+    const badge=document.createElement('div');
+    if(e.type==='sub'){
+      badge.className='lu-badge-sub out';
+      badge.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" width="9" height="9"><path d="M20 4H4v16h16V4zm-2 14H6v-2h12v2z"/></svg>';
+    }else{
+      badge.className='lu-badge '+e.type;
+    }
+    targetEl.querySelector('.lu-player-avatar').appendChild(badge);
+    setTimeout(()=>targetEl.classList.remove('lu-new-event'),3000);
+  });
+}
+
+// ─── Fiche joueur (bio) ──────────────────────────────
+async function openPlayerBio(player,teamName,source){
+  const ov=$('player-bio-ov');if(!ov)return;
+  const photoEl=$('player-bio-photo'),nameEl=$('player-bio-name'),posEl=$('player-bio-pos'),factsEl=$('player-bio-facts');
+  const initials=abbr(player.name);
+  photoEl.innerHTML=player.photo?`<img src="${player.photo}" onerror="this.style.display='none';this.parentNode.insertAdjacentHTML('beforeend','<div class=\\'lu-pi\\'>${initials}</div>')">`:`<div class="lu-pi">${initials}</div>`;
+  nameEl.textContent=player.name||'—';
+  posEl.textContent=[player.position,teamName].filter(Boolean).join(' · ')||'—';
+  const fact=(label,value)=>value?`<div class="player-bio-fact"><span class="player-bio-fact-label">${label}</span><span class="player-bio-fact-value">${value}</span></div>`:'';
+  const marketValueTxt=player.marketValue?Math.round(player.marketValue/100000)/10+' M€':'';
+  factsEl.innerHTML=fact('Âge',player.age?player.age+' ans':'')+fact('Nationalité',player.nationality)+fact('Taille',player.height)+fact('Pied fort',player.foot)+fact('Numéro',player.number)+fact('Note moyenne',player.rating)+fact('Valeur marchande',marketValueTxt);
+  // Lien vers la fiche FlashScore complète (bio détaillée, historique, stats saison)
+  const linkWrap=$('player-bio-facts');
+  if(player.bioUrl&&player.id){
+    linkWrap.innerHTML+=`<a class="player-bio-fact" style="justify-content:center;color:var(--acc);text-decoration:none;margin-top:6px" href="https://www.flashscore.fr/joueur/${player.bioUrl}/${player.id}/" target="_blank" rel="noopener">Voir la fiche complète →</a>`;
+  }
+  ov.style.display='flex';
+  // Complément bio via l'API backup si la source FS n'a pas fourni ces champs
+  // (endpoint /players existe sur api-sports.io — nécessite un id joueur AF,
+  // qui ne correspond pas forcément à l'id FlashScore : best-effort seulement).
+  if(source==='fs'&&!player.age&&!player.nationality&&player.id){
+    // Pas de mapping id FS → id AF fiable sans un id club/nom précis : on ne
+    // tente pas de complément ici pour éviter d'afficher une mauvaise fiche.
+  }
+}
+function closePlayerBio(){const ov=$('player-bio-ov');if(ov)ov.style.display='none';}
+
+// ═══════════════════════════════════════════════════
+// ── SIGNALEMENTS (bugs / failles / suggestions) ──
+// Stockés dans Firebase sous /feedback/{id}. Les VIP sont marqués prioritaires
+// et remontent en haut de la liste côté admin.
+// ═══════════════════════════════════════════════════
+let _fbShots = [];          // captures jointes, en base64 compressé
+const FB_MAX_SHOTS = 3;
+const FB_SHOT_MAX_BYTES = 120000; // ~120 Ko par image après compression
+
+function openFeedbackModal(){
+  if(!currentUser){ toast('Connecte-toi pour envoyer un signalement'); openAuthModal('login'); return; }
+  _fbShots = [];
+  const ov = $('feedback-ov');
+  if(!ov){
+    // Garde-fou : si la modale n'est pas dans le DOM (index.html pas à jour),
+    // on le dit au lieu de ne rien faire du tout — c'est exactement le symptôme
+    // qu'on a eu quand elle était imbriquée dans le lecteur vidéo masqué.
+    console.error('[feedback] #feedback-ov introuvable dans le DOM');
+    toast('Formulaire indisponible, recharge la page');
+    return;
+  }
+  const t = $('fb-text'); if(t) t.value = '';
+  const ttl = $('fb-title'); if(ttl) ttl.value = '';
+  setFeedbackType('bug');
+  renderFbShots();
+  const prio = $('fb-priority-note');
+  if(prio) prio.style.display = isVIP() ? '' : 'none';
+  ov.style.display = 'flex';
+}
+function closeFeedbackModal(){ const ov=$('feedback-ov'); if(ov) ov.style.display='none'; }
+
+let _fbType = 'bug';
+function setFeedbackType(t){
+  _fbType = t;
+  document.querySelectorAll('.fb-type-btn').forEach(b => b.classList.toggle('on', b.dataset.t === t));
+}
+
+function fbPickShots(){
+  const inp = $('fb-file-input');
+  if(inp) inp.click();
+}
+function fbHandleFiles(e){
+  const files = Array.from(e.target.files || []);
+  e.target.value = '';
+  files.forEach(f => {
+    if(_fbShots.length >= FB_MAX_SHOTS){ toast('3 captures maximum'); return; }
+    if(!f.type.startsWith('image/')){ toast('Images uniquement'); return; }
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = () => {
+        // Redimensionnement : une capture de téléphone fait plusieurs Mo, ce qui
+        // ne passerait pas dans la Realtime Database.
+        const MAX = 1000;
+        let w = img.width, h = img.height;
+        if(w > MAX || h > MAX){ const r = Math.min(MAX/w, MAX/h); w = Math.round(w*r); h = Math.round(h*r); }
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        let data = '', q = 0.7;
+        for(let i=0;i<5;i++){ data = c.toDataURL('image/jpeg', q); if(data.length < FB_SHOT_MAX_BYTES) break; q -= 0.12; }
+        if(data.length > FB_SHOT_MAX_BYTES*1.3){ toast('Capture trop lourde'); return; }
+        _fbShots.push(data);
+        renderFbShots();
+      };
+      img.onerror = () => toast('Image illisible');
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(f);
+  });
+}
+function fbRemoveShot(i){ _fbShots.splice(i,1); renderFbShots(); }
+function renderFbShots(){
+  const wrap = $('fb-shots');
+  if(!wrap) return;
+  wrap.innerHTML = _fbShots.map((d,i) =>
+    '<div class="fb-shot"><img src="'+d+'" alt=""><button class="fb-shot-del" onclick="fbRemoveShot('+i+')">×</button></div>'
+  ).join('') + (_fbShots.length < FB_MAX_SHOTS
+    ? '<button class="fb-shot-add" onclick="fbPickShots()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M12 5v14M5 12h14"/></svg><span>Capture</span></button>'
+    : '');
+}
+
+function submitFeedback(){
+  if(!currentUser || !db){ toast('Non connecté'); return; }
+  const titleEl = $('fb-title'), textEl = $('fb-text');
+  const title = (titleEl?.value || '').trim();
+  const text  = (textEl?.value || '').trim();
+  if(title.length < 4){ toast('Donne un titre court'); return; }
+  if(text.length < 10){ toast('Décris un peu plus en détail'); return; }
+  if(text.length > 2000){ toast('Description trop longue (2000 max)'); return; }
+
+  const btn = $('fb-submit-btn');
+  if(btn){ btn.disabled = true; btn.textContent = 'Envoi…'; }
+
+  const payload = {
+    type: _fbType,
+    title: title.slice(0,100),
+    text: text.slice(0,2000),
+    uid: currentUser.uid,
+    pseudo: (currentUser.displayName || currentUser.email?.split('@')[0] || 'Anonyme').slice(0,24),
+    email: currentUser.email || null,
+    vip: isVIP(),
+    status: 'open',
+    ts: Date.now(),
+    ua: navigator.userAgent.slice(0,180),
+    shots: _fbShots.length ? _fbShots : null,
+  };
+
+  db.ref('feedback').push(payload)
+    .then(() => {
+      toast('✅ Merci ! Signalement envoyé');
+      closeFeedbackModal();
+    })
+    .catch(err => {
+      console.error('[feedback]', err && err.message);
+      toast('❌ Envoi impossible');
+    })
+    .finally(() => { if(btn){ btn.disabled = false; btn.textContent = 'Envoyer'; } });
+}
+
+// ─── Sous-navigation Détails : Compos / Stats / Stats joueurs ───
+let detTab='compos';
+function resetDetTabs(){
+  detTab='compos';
+  ['compos','stats','players'].forEach(t=>{
+    $('det-tab-'+t)?.classList.toggle('on',t==='compos');
+    const p=$('det-panel-'+t);if(p)p.style.display=t==='compos'?'':'none';
+  });
+}
+function switchDetTab(tab){
+  detTab=tab;
+  ['compos','stats','players'].forEach(t=>{
+    $('det-tab-'+t)?.classList.toggle('on',t===tab);
+    const p=$('det-panel-'+t);if(p)p.style.display=t===tab?'':'none';
+  });
+  const m=pl.match;if(!m)return;
+  if(tab==='stats')loadMatchStats(m);
+  if(tab==='players')loadPlayersStats(m);
+}
+
+// ─── Panneau Stats du match (barres comparatives) ───
+async function fetchStatsFromFlashScore(m){
+  const fsId=await resolveFsMatchId(m);
+  if(!fsId)throw new Error('fs_no_match_id');
+  // dsos2 confirmé par capture HAR le 11/09/2026 : stats du match déjà
+  // libellées en français (possession, tirs totaux, tirs cadrés, etc.)
+  const raw=await fsFetch(`/pq_graphql?_hash=dsos2&eventId=${fsId}&projectId=${FS_PROJECT_ID_CLIENT}`);
+  const data=parseFsFeed(raw)?.data?.findEventById;
+  if(!data)throw new Error('fs_no_stats');
+  const homePart=data.eventParticipants?.find(p=>p.type?.side==='HOME');
+  const awayPart=data.eventParticipants?.find(p=>p.type?.side==='AWAY');
+  const homeVals=homePart?.stats?.[0]?.values||[];
+  const awayVals=awayPart?.stats?.[0]?.values||[];
+  const rows=homeVals.map((hv,i)=>({label:hv.name,home:hv.value,away:awayVals[i]?.value}));
+  if(!rows.length)throw new Error('fs_empty_stats');
+  return{rows,source:'fs'};
+}
+async function fetchStatsFromBackupApi(m){
+  const fixtureId=await resolveAfFixtureId(m);
+  if(!fixtureId)throw new Error('af_no_fixture_id');
+  const res=await afFetch('/fixtures/statistics?fixture='+fixtureId);
+  const resp=res?.response||[];
+  if(resp.length<2)throw new Error('af_empty_stats');
+  const[home,away]=resp;
+  const rows=(home.statistics||[]).map((s,i)=>({label:s.type,home:s.value,away:away.statistics?.[i]?.value}));
+  if(!rows.length)throw new Error('af_empty_stats');
+  return{rows,source:'af'};
+}
+function renderStatsRows(rows){
+  const wrap=$('det-stats-list');if(!wrap)return;
+  if(!rows?.length){wrap.innerHTML='<div class="lu-empty">Statistiques indisponibles pour ce match.</div>';return;}
+  wrap.innerHTML=rows.map(r=>{
+    const h=parseFloat(r.home)||0,a=parseFloat(r.away)||0,total=(h+a)||1;
+    const hPct=Math.round(h/total*100),aPct=100-hPct;
+    return`<div class="det-stat-row"><div class="det-stat-vals"><span>${r.home??'-'}</span><span>${r.away??'-'}</span></div><div class="det-stat-label">${r.label||''}</div><div class="det-stat-bar"><div class="det-stat-bar-home" style="width:${hPct}%"></div><div class="det-stat-bar-away" style="width:${aPct}%"></div></div></div>`;
+  }).join('');
+}
+async function loadMatchStats(m,silentRefresh){
+  const wrap=$('det-stats-list');if(!wrap)return;
+  if(!silentRefresh&&m._statsCache){renderStatsRows(m._statsCache);return;}
+  if(!silentRefresh)wrap.innerHTML='<div class="lu-loading" style="display:flex"><div class="spinner"></div></div>';
+  let result=null;
+  try{result=await fetchStatsFromFlashScore(m);}catch(e){try{result=await fetchStatsFromBackupApi(m);}catch(e2){result=null;}}
+  m._statsCache=result?.rows||null;
+  renderStatsRows(m._statsCache);
+}
+
+// ─── Panneau Stats joueurs (classement par catégorie) ───
+// FlashScore (dlie2) donne un vrai rating par joueur mais pas encore les
+// compteurs tirs/buts/passes/tacles (onglet "Stats joueurs" jamais capturé
+// côté FlashScore). L'API backup a l'inverse (tout SAUF un rating toujours
+// fiable). Solution : on interroge les deux et on fusionne — rating de
+// FlashScore quand dispo, compteurs de l'API backup — au lieu de tout miser
+// sur une seule source (ce qui avait fait disparaître le Rating sur les
+// matchs où le backup ne trouve pas le fixture).
+async function fetchPlayersFromFlashScore(m){
+  const fsId=await resolveFsMatchId(m);
+  if(!fsId)throw new Error('fs_no_match_id');
+  const raw=await fsFetch(`/pq_graphql?_hash=dlie2&eventId=${fsId}&projectId=${FS_PROJECT_ID_CLIENT}`);
+  const data=parseFsFeed(raw)?.data?.findEventById;
+  if(!data)throw new Error('fs_no_player_stats');
+  const list=[];
+  (data.eventParticipants||[]).forEach(part=>{
+    const L=part.lineup||part.predictedLineup;
+    (L?.players||[]).forEach(p=>{
+      const rating=parseFloat(p.rating??p.averageRating)||0;
+      if(rating>0)list.push({id:p.id,name:p.listName||p.fieldName,rating});
+    });
+  });
+  if(!list.length)throw new Error('fs_empty_player_stats');
+  return{list,source:'fs'};
+}
+async function fetchPlayersFromBackupApi(m){
+  const fixtureId=await resolveAfFixtureId(m);
+  if(!fixtureId)throw new Error('af_no_fixture_id');
+  const res=await afFetch('/fixtures/players?fixture='+fixtureId);
+  const resp=res?.response||[];
+  if(!resp.length)throw new Error('af_empty_player_stats');
+  const list=[];
+  resp.forEach(teamBlock=>{
+    const teamName=teamBlock.team?.name||'';
+    (teamBlock.players||[]).forEach(p=>{
+      const st=p.statistics?.[0];if(!st)return;
+      list.push({
+        id:p.player.id,name:p.player.name,team:teamName,photo:p.player.photo,
+        rating:parseFloat(st.games?.rating)||0,
+        shots:st.shots?.total||0,
+        goals:st.goals?.total||0,
+        passes:st.passes?.total||0,
+        tackles:(st.tackles?.total||0)+(st.tackles?.interceptions||0)+(st.tackles?.blocks||0),
+      });
+    });
+  });
+  if(!list.length)throw new Error('af_empty_player_stats');
+  return{list,source:'af'};
+}
+function normPlayerName(s){return(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z]/g,'');}
+async function fetchPlayersStatsMerged(m){
+  const[fsResult,afResult]=await Promise.allSettled([fetchPlayersFromFlashScore(m),fetchPlayersFromBackupApi(m)])
+    .then(([a,b])=>[a.status==='fulfilled'?a.value:null,b.status==='fulfilled'?b.value:null]);
+  if(!fsResult&&!afResult)throw new Error('no_player_stats_any_source');
+  if(!afResult)return fsResult; // seulement FlashScore dispo → rating seul, autres catégories vides
+  if(!fsResult)return afResult; // seulement le backup dispo → toutes catégories, rating du backup
+  // Les deux sont dispo : on part de la liste backup (a toutes les catégories)
+  // et on écrase juste le rating par celui de FlashScore quand on trouve le
+  // même joueur (par nom normalisé — les id ne correspondent pas entre les
+  // deux sources).
+  const fsByName=new Map(fsResult.list.map(p=>[normPlayerName(p.name),p.rating]));
+  afResult.list.forEach(p=>{
+    const r=fsByName.get(normPlayerName(p.name));
+    if(r)p.rating=r;
+  });
+  return{list:afResult.list,source:'merged'};
+}
+let playersCat='rating';
+function switchPlayersCat(cat){
+  playersCat=cat;
+  document.querySelectorAll('.det-players-subtab').forEach(b=>b.classList.toggle('on',b.dataset.cat===cat));
+  if(pl.match?._playersStatsCache)renderPlayersList(pl.match._playersStatsCache);
+}
+function renderPlayersList(list){
+  const wrap=$('det-players-list');if(!wrap)return;
+  if(!list?.length){wrap.innerHTML='<div class="lu-empty">Stats joueurs indisponibles pour ce match.</div>';return;}
+  const sorted=[...list].filter(p=>(p[playersCat]||0)>0).sort((a,b)=>(b[playersCat]||0)-(a[playersCat]||0)).slice(0,10);
+  if(!sorted.length){wrap.innerHTML='<div class="lu-empty">Pas de données pour cette catégorie.</div>';return;}
+  wrap.innerHTML=sorted.map((p,i)=>{
+    const initials=abbr(p.name);
+    const bioPayload=JSON.stringify({id:p.id,name:p.name,photo:p.photo,number:null,position:null}).replace(/'/g,'&#39;');
+    return`<button type="button" class="det-player-row" onclick='openPlayerBio(${bioPayload},${JSON.stringify(p.team)},"stats")'>
+      <span class="det-player-rank">${i+1}</span>
+      <div class="det-player-photo">${p.photo?`<img src="${p.photo}" loading="lazy" onerror="this.style.display='none'">`:`<div class="lu-pi">${initials}</div>`}</div>
+      <div class="det-player-info"><div class="det-player-name">${p.name||'?'}</div><div class="det-player-team">${p.team||''}</div></div>
+      <span class="det-player-val">${playersCat==='rating'?(p.rating?p.rating.toFixed(1):'-'):(p[playersCat]??0)}</span>
+    </button>`;
+  }).join('');
+}
+async function loadPlayersStats(m,silentRefresh){
+  const wrap=$('det-players-list');if(!wrap)return;
+  if(!silentRefresh&&m._playersStatsCache){renderPlayersList(m._playersStatsCache);return;}
+  if(!silentRefresh)wrap.innerHTML='<div class="lu-loading" style="display:flex"><div class="spinner"></div></div>';
+  let result=null;
+  try{result=await fetchPlayersStatsMerged(m);}catch(e){result=null;}
+  m._playersStatsCache=result?.list||null;
+  renderPlayersList(m._playersStatsCache);
+}
+// OPTIMISATION : ces rafraîchissements tournaient en continu, même quand
+// l'onglet était en arrière-plan ou le téléphone en veille — ça consommait le
+// quota des API (football-data.org est limité) et la batterie pour rien.
+// On ne rafraîchit désormais que si la page est réellement visible, et on
+// force une mise à jour au retour sur l'onglet pour ne rien afficher de périmé.
+function pageVisible(){ return document.visibilityState === 'visible'; }
+setInterval(()=>{ if(pageVisible() && Date.now()-lastFetch>60000) loadMatches(); },60000);
+setInterval(()=>{ if(pageVisible() && data.live.length) loadLiveData(); },30000);
+document.addEventListener('visibilitychange', ()=>{
+  if(!pageVisible()) return;
+  if(Date.now()-lastFetch > 60000) loadMatches();
+  else if(data.live.length) loadLiveData();
+});
 
 // ─── TICKER ──────────────────────────────────────────
 function renderTicker(){
@@ -1072,49 +2785,33 @@ let newsCache=[];
 let newsLoading=false;
 let newsLoaded=false;
 
-const NEWS_FEEDS=[
-  {name:"L'Équipe",    color:'#3a8ef6', url:'https://www.lequipe.fr/rss/actu_rss_Football.xml'},
-  {name:'RMC Sport',   color:'#e4002b', url:'https://rmcsport.bfmtv.com/rss/football/'},
-  {name:'Foot Mercato',color:'#00c87a', url:'https://www.footmercato.net/rss.xml'},
-  {name:'France Info', color:'#a259ff', url:'https://www.francetvinfo.fr/sports/football.rss'},
-];
-const RSS2JSON='https://api.rss2json.com/v1/api.json?rss_url=';
-
+// Les flux RSS sont désormais agrégés par le serveur (/api/news) : l'appel
+// direct à api.rss2json.com depuis le navigateur était bloqué par la CSP
+// (connect-src n'autorise que 'self' + Firebase), d'où la section Actualités
+// systématiquement vide.
 async function fetchNews(){
   if(newsLoading)return;
   newsLoading=true;
-  newsCache=[];
-  const results=await Promise.allSettled(NEWS_FEEDS.map(async feed=>{
-    try{
-      const url=RSS2JSON+encodeURIComponent(feed.url)+'&count=7';
-      const ctrl=new AbortController();
-      const tid=setTimeout(()=>ctrl.abort(),10000);
-      const res=await fetch(url,{signal:ctrl.signal});
-      clearTimeout(tid);
-      if(!res.ok)return[];
-      const json=await res.json();
-      if(json.status!=='ok'||!json.items?.length)return[];
-      return json.items.map(item=>({
-        title:  item.title?.trim(),
-        link:   item.link,
-        desc:   item.description?.replace(/<[^>]+>/g,'').trim().slice(0,130),
-        img:    item.thumbnail||item.enclosure?.link||null,
-        pubDate:item.pubDate,
-        source: feed.name,
-        color:  feed.color,
-      })).filter(n=>n.title&&n.link);
-    }catch(e){return[];}
-  }));
-  for(const r of results)if(r.status==='fulfilled')newsCache.push(...r.value);
-  newsCache.sort((a,b)=>new Date(b.pubDate||0)-new Date(a.pubDate||0));
+  try{
+    const ctrl=new AbortController();
+    const tid=setTimeout(()=>ctrl.abort(),15000);
+    const res=await fetch('/api/news',{signal:ctrl.signal});
+    clearTimeout(tid);
+    const json=await res.json();
+    newsCache=Array.isArray(json.items)?json.items:[];
+  }catch(e){
+    console.warn('[news] chargement échoué:', e && e.message);
+    newsCache=[];
+  }
   newsLoading=false;
   newsLoaded=true;
   // Injecter dans le DOM sans re-render total
   const list=document.getElementById('dash-news-list');
-  if(list) list.innerHTML=newsCache.length?renderNewsList():'<div class="news-empty">Aucune actualité disponible</div>';
+  if(list) list.innerHTML=newsCache.length?renderNewsList():'<div class="news-empty">Actualités momentanément indisponibles</div>';
   const sub=document.getElementById('dash-news-count');
   if(sub) sub.textContent=newsCache.length?`${newsCache.length} articles`:'';
 }
+
 
 function fmtNewsDate(d){
   if(!d)return'';
@@ -1127,21 +2824,37 @@ function fmtNewsDate(d){
   }catch(e){return'';}
 }
 
+// SÉCURITÉ : n'autorise que http(s) dans un href/src. Sans ça, un flux RSS
+// compromis pouvait injecter href="javascript:..." (exécution de code au clic).
+function safeUrl(u){
+  if(!u) return '';
+  const s = String(u).trim();
+  if(!/^https?:\/\//i.test(s)) return '';
+  return s.replace(/["'<>]/g,'');
+}
 function renderNewsList(){
   if(!newsCache.length)return'<div class="news-empty">Aucune actualité disponible</div>';
-  return newsCache.slice(0,20).map((n,i)=>`
-    <a class="news-card${i===0?' news-card-featured':''}" href="${n.link}" target="_blank" rel="noopener">
-      ${n.img&&i===0?`<div class="news-card-img" style="background-image:url('${n.img}')"><div class="news-card-img-overlay"></div></div>`:''}
+  // SÉCURITÉ : tout le contenu vient de flux RSS externes (non fiables) — il
+  // était injecté brut dans le DOM, ce qui permettait un XSS via un titre
+  // contenant du HTML. Tout est désormais échappé.
+  return newsCache.slice(0,20).map((n,i)=>{
+    const link = safeUrl(n.link);
+    const img  = safeUrl(n.img);
+    const color = /^#[0-9a-fA-F]{3,8}$/.test(n.color||'') ? n.color : 'var(--acc)';
+    return `
+    <a class="news-card${i===0?' news-card-featured':''}"${link?` href="${link}"`:''} target="_blank" rel="noopener noreferrer">
+      ${img&&i===0?`<div class="news-card-img" style="background-image:url('${img}')"><div class="news-card-img-overlay"></div></div>`:''}
       <div class="news-card-body">
         <div class="news-card-meta">
-          <span class="news-source" style="--src-color:${n.color}">${n.source}</span>
-          <span class="news-date">${fmtNewsDate(n.pubDate)}</span>
+          <span class="news-source" style="--src-color:${color}">${escHtml(n.source)}</span>
+          <span class="news-date">${escHtml(fmtNewsDate(n.pubDate))}</span>
         </div>
-        <div class="news-card-title${i===0?' news-title-lg':''}">${n.title}</div>
-        ${n.desc&&i>0?`<div class="news-card-desc">${n.desc}…</div>`:''}
+        <div class="news-card-title${i===0?' news-title-lg':''}">${escHtml(n.title)}</div>
+        ${n.desc&&i>0?`<div class="news-card-desc">${escHtml(n.desc)}…</div>`:''}
       </div>
       <svg class="news-arrow" viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
-    </a>`).join('');
+    </a>`;
+  }).join('');
 }
 
 function renderDashboard(){
@@ -1154,15 +2867,28 @@ function renderDashboard(){
 
   const totalToday=allToday.length;
 
+  // Apparition en cascade : chaque bloc reçoit un délai croissant (plafonné
+  // pour que le bas de page n'attende pas trop longtemps).
+  let _ai = 0;
+  const anim = () => `style="--d:${Math.min(_ai++,14)*55}ms"`;
+
+  const hour=new Date().getHours();
+  const greet=hour<6?'Bonne nuit':hour<12?'Bonjour':hour<18?'Bon après-midi':'Bonsoir';
+  const who=currentUser?(currentUser.displayName||currentUser.email.split('@')[0]||''):'';
+
+  // Aperçu des 3 prochains matchs (live d'abord, puis à venir)
+  const preview=[...live,...upcoming].slice(0,3);
+
   return`<div class="dash-wrap">
 
     <!-- HERO WELCOME -->
-    <div class="dash-hero-card">
+    <div class="dash-hero-card dash-anim" ${anim()}>
       <div class="dash-hero-glow"></div>
       <div class="dash-hero-top">
         <div class="dash-hero-logo"><img src="/ball.png" width="44" height="44" style="object-fit:contain;display:block" alt=""></div>
         <div class="dash-hero-text">
-          <div class="dash-hero-title">Bienvenue sur<br><span class="dash-hero-brand">OKIN STREAM</span></div>
+          <div class="dash-hero-greet">${greet}${who?', '+escHtml(who.slice(0,16)):''}</div>
+          <div class="dash-hero-title"><span class="dash-hero-brand">OKIN STREAM</span></div>
           <div class="dash-hero-date">${new Date().toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'})}</div>
         </div>
       </div>
@@ -1194,8 +2920,94 @@ function renderDashboard(){
       </div>
     </div>
 
+    <!-- APERÇU MATCHS DU JOUR -->
+    ${preview.length?`
+    <div class="dash-section-head dash-anim" ${anim()}>
+      <span class="dash-section-title">${live.length?'<span class="dash-live-dot"></span> En ce moment':'Prochains matchs'}</span>
+      <button class="dash-section-link" onclick="setPage('home')">Tout voir</button>
+    </div>
+    <div class="dash-preview-list dash-anim" ${anim()}>
+      ${preview.map(m=>{
+        const lv=isLive(m);
+        const time=lv?(m._status?.elapsed!=null?m._status.elapsed+"'":'LIVE'):fmtTime(m.utcDate);
+        return`<div class="dash-preview-row" data-mid="${m.id}">
+          <div class="dash-prev-time ${lv?'is-live':''}">${lv?'<span class="dash-live-dot"></span>':''}${time}</div>
+          <div class="dash-prev-teams">
+            <div class="dash-prev-team"><img src="${m.homeTeam.crest||''}" onerror="this.style.visibility='hidden'" alt=""><span>${escHtml(m.homeTeam.shortName||m.homeTeam.name||'')}</span></div>
+            <div class="dash-prev-team"><img src="${m.awayTeam.crest||''}" onerror="this.style.visibility='hidden'" alt=""><span>${escHtml(m.awayTeam.shortName||m.awayTeam.name||'')}</span></div>
+          </div>
+          ${lv&&m.goals?`<div class="dash-prev-score">${m.goals.home??0}<br>${m.goals.away??0}</div>`:'<svg class="dash-prev-arrow" viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>'}
+        </div>`;
+      }).join('')}
+    </div>`:''}
+
+    <!-- COMPÉTITIONS -->
+    <div class="dash-section-head dash-anim" ${anim()}>
+      <span class="dash-section-title">Compétitions suivies</span>
+    </div>
+    <div class="dash-comps-scroll dash-anim" ${anim()}>
+      ${Object.entries({CL:'Champions League',EL:'Europa League',PL:'Premier League',PD:'La Liga',BL1:'Bundesliga',SA:'Serie A',FL1:'Ligue 1'}).map(([id,name])=>`
+        <div class="dash-comp-pill" onclick="goToCompetition('${id}')">
+          <img src="https://crests.football-data.org/${id}.png" onerror="this.style.display='none'" alt="">
+          <span>${name}</span>
+        </div>`).join('')}
+    </div>
+
+    <!-- CE QUE PROPOSE LE SITE -->
+    <div class="dash-section-head dash-anim" ${anim()}>
+      <span class="dash-section-title">Ce que tu trouves ici</span>
+    </div>
+    <div class="dash-feat-grid dash-anim" ${anim()}>
+      <div class="dash-feat" onclick="setPage('home')">
+        <div class="dash-feat-ico">📡</div>
+        <div class="dash-feat-t">Streams en direct</div>
+        <div class="dash-feat-d">Plusieurs sources par match, switch en un clic</div>
+      </div>
+      <div class="dash-feat" onclick="setPage('home')">
+        <div class="dash-feat-ico">📊</div>
+        <div class="dash-feat-t">Compos & stats</div>
+        <div class="dash-feat-d">Terrain 2D, notes des joueurs, cartons, blessures</div>
+      </div>
+      <div class="dash-feat" onclick="setPage('home')">
+        <div class="dash-feat-ico">💬</div>
+        <div class="dash-feat-t">Chat en direct</div>
+        <div class="dash-feat-d">Commente le match avec les autres supporters</div>
+      </div>
+      <div class="dash-feat" onclick="setPage('schedule')">
+        <div class="dash-feat-ico">📺</div>
+        <div class="dash-feat-t">Chaînes TV</div>
+        <div class="dash-feat-d">beIN, Canal+, RMC Sport, Eurosport et plus</div>
+      </div>
+    </div>
+
+    <!-- APP ANDROID — teaser "en cours de développement" -->
+    <div class="dash-app-card dash-anim" ${anim()}>
+      <div class="dash-app-glow"></div>
+      <div class="dash-app-badge">Bientôt</div>
+      <div class="dash-app-row">
+        <div class="dash-app-ico">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M17.6 9.48l1.84-3.18a.38.38 0 0 0-.14-.52.38.38 0 0 0-.52.14l-1.86 3.22a11.4 11.4 0 0 0-9.84 0L5.22 5.92a.38.38 0 0 0-.52-.14.38.38 0 0 0-.14.52L6.4 9.48A10.8 10.8 0 0 0 1 18h22a10.8 10.8 0 0 0-5.4-8.52zM7 15.25a1.25 1.25 0 1 1 1.25-1.25A1.25 1.25 0 0 1 7 15.25zm10 0A1.25 1.25 0 1 1 18.25 14 1.25 1.25 0 0 1 17 15.25z"/></svg>
+        </div>
+        <div class="dash-app-txt">
+          <div class="dash-app-t">Application Android</div>
+          <div class="dash-app-d">En cours de développement — bientôt disponible en téléchargement direct</div>
+        </div>
+      </div>
+      <div class="dash-app-progress"><div class="dash-app-progress-fill"></div></div>
+      <div class="dash-app-hint">En attendant, ajoute le site à ton écran d'accueil depuis le menu de ton navigateur</div>
+    </div>
+
+    <!-- ACTUALITÉS FOOT -->
+    <div class="dash-section-head dash-anim" ${anim()}>
+      <span class="dash-section-title">Actualités</span>
+      <span class="dash-section-sub" id="dash-news-count"></span>
+    </div>
+    <div class="dash-news-list dash-anim" id="dash-news-list" ${anim()}>
+      ${newsLoaded?renderNewsList():'<div class="dash-news-loading"><div class="spinner"></div></div>'}
+    </div>
+
     <!-- SOUTENIR -->
-    <a class="dash-support-card" href="https://www.paypal.com/ncp/payment/ENMYKYCAFGHFE" target="_blank" rel="noopener">
+    <a class="dash-support-card dash-anim" ${anim()} href="https://www.paypal.com/ncp/payment/ENMYKYCAFGHFE" target="_blank" rel="noopener">
       <div class="dash-sup-icon">
         <svg viewBox="0 0 24 24" fill="white" width="22" height="22"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
       </div>
@@ -1206,20 +3018,8 @@ function renderDashboard(){
       <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" class="dash-tg-arrow"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
     </a>
 
-    <!-- COMPÉTITIONS -->
-    <div class="dash-section-head">
-      <span class="dash-section-title">Compétitions suivies</span>
-    </div>
-    <div class="dash-comps-scroll">
-      ${Object.entries({CL:'Champions League',EL:'Europa League',PL:'Premier League',PD:'La Liga',BL1:'Bundesliga',SA:'Serie A',FL1:'Ligue 1'}).map(([id,name])=>`
-        <div class="dash-comp-pill" onclick="goToCompetition('${id}')">
-          <img src="https://crests.football-data.org/${id}.png" onerror="this.style.display='none'" alt="">
-          <span>${name}</span>
-        </div>`).join('')}
-    </div>
-
     <!-- ADMIN PANEL CARD — visible uniquement si connecté en tant qu'admin -->
-    ${isAdmin() ? `<div class="dash-admin-card" onclick="setPage('account');setTimeout(openAdminPanel,150)">
+    ${isAdmin() ? `<div class="dash-admin-card dash-anim" ${anim()} onclick="setPage('account');setTimeout(openAdminPanel,150)">
       <div class="dash-admin-card-icon">
         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 4l5 2.18V11c0 3.5-2.33 6.79-5 7.93-2.67-1.14-5-4.43-5-7.93V7.18L12 5zm-1 5v2h2v-2h-2zm0 4v2h2v-2h-2z"/></svg>
       </div>
@@ -1231,7 +3031,7 @@ function renderDashboard(){
     </div>` : ''}
 
     <!-- MANIFESTE -->
-    <div class="dash-manifesto-card">
+    <div class="dash-manifesto-card dash-anim" ${anim()}>
       <div class="dash-manifesto-bg-glow"></div>
       <div class="dash-manifesto-header">
         <div class="dash-manifesto-emoji">✊</div>
@@ -1254,7 +3054,7 @@ function renderDashboard(){
     </div>
 
     <!-- POURQUOI LA PUB -->
-    <div class="dash-ads-card">
+    <div class="dash-ads-card dash-anim" ${anim()}>
       <div class="dash-ads-header">
         <div class="dash-ads-emoji">💡</div>
         <div>
@@ -1412,7 +3212,13 @@ function featCard(m){
       </div>
       <div class="feat-match">
         <div class="feat-team">${crestImg(m.homeTeam.crest,hn,'crest-lg',m.homeTeam)}<div class="feat-name">${hn}</div></div>
-        <div class="feat-center"><div class="feat-score">${live||fin?getScore(m):'-'}</div>${live&&min?`<div class="feat-min">${min}</div>`:''}</div>
+        <div class="feat-center"><div class="feat-score">${live||fin?getScore(m):'-'}</div>${(function(){
+          // Sous le score : uniquement le chrono. Le statut "EN DIRECT" est
+          // déjà affiché en pastille au-dessus, inutile de le répéter ici.
+          if(!live) return '';
+          const c = liveClock(m);
+          return (c && /\d/.test(c)) ? `<div class="feat-min" data-clock="${m.id}">${c}</div>` : '';
+        })()}</div>
         <div class="feat-team">${crestImg(m.awayTeam.crest,an,'crest-lg',m.awayTeam)}<div class="feat-name">${an}</div></div>
       </div>
     </div>
@@ -1429,8 +3235,20 @@ function mCard(m){
   const notifHome = homeId && goalNotifTeams.has(homeId);
   const notifAway = awayId && goalNotifTeams.has(awayId);
   let stat,sc,time;
-  if(live){stat=`<span class="mc-status live">● LIVE</span>`;sc='live';time=`<span class="mc-time"><span class="mc-ld"></span>${min||'LIVE'}</span>`;}
-  else if(fin){stat=`<span class="mc-status ft">FT</span>`;sc='ft';time=`<span class="mc-time">Terminé</span>`;}
+  if(live){
+    stat=`<span class="mc-status live"><span class="mc-ld"></span>LIVE</span>`;
+    sc='live';
+    // Chrono à la seconde, rafraîchi par startClockTicker() via data-clock
+    // On n'affiche le chrono que s'il existe vraiment. Avant, on retombait sur
+    // "LIVE" en secours, ce qui répétait trois fois l'info sur la même carte
+    // (badge du haut + pied de carte + bouton).
+    const clk = liveClock(m);
+    const hasClock = clk && /\d/.test(clk);
+    time = hasClock
+      ? `<span class="mc-time mc-time-live"><span class="mc-clock" data-clock="${m.id}">${clk}</span></span>`
+      : `<span class="mc-time"></span>`;
+  }
+  else if(fin){stat=`<span class="mc-status ft">Terminé</span>`;sc='ft';time=`<span class="mc-time">${fmtTime(m.utcDate)}</span>`;}
   else{stat=`<span class="mc-status soon">${fmtTime(m.utcDate)}</span>`;sc='soon';time=`<span class="mc-time">À venir</span>`;}
   // Boutons de notification buts (uniquement si match en cours ou à venir)
   const notifBtns = !fin ? `
@@ -1447,7 +3265,7 @@ function mCard(m){
     <div class="mc-foot">${time}<div class="mc-act">
       ${notifBtns}
       <button class="fav-btn${fav?' on':''}" data-fid="${m.id}"><svg viewBox="0 0 24 24" fill="${fav?'currentColor':'none'}" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button>
-      <button class="watch-btn${(getStreamUrl(m))?' has-stream':''}" data-watch="${m.id}">${getStreamUrl(m)?(live?'▶ Live':fin?'▶ Résumé':'▶ Stream'):live?'Live':fin?'FT':'—'}</button>
+      <button class="watch-btn${(getStreamUrl(m))?' has-stream':''}" data-watch="${m.id}">${getStreamUrl(m)?(live?'▶ Regarder':fin?'▶ Résumé':'▶ Stream'):'—'}</button>
     </div></div>
   </div>`;
 }
@@ -1528,6 +3346,18 @@ function destroyPlayers(){
 
 function proxyUrl(url){
   if(!url) return url;
+  // URL relative = déjà servie par NOUS (ex. /api/fls/play/xxx.m3u8, qui gère
+  // lui-même la résolution et le relais). La repasser dans /proxy créerait
+  // une boucle serveur→serveur absurde.
+  if(url.startsWith('/')) return url;
+  // dlive.sx (et YouTube) ne doivent JAMAIS être proxifiés : ce sont des
+  // iframes embed, le proxy/relay n'a aucun sens dessus et gaspillerait de
+  // la bande passante serveur pour rien.
+  try{
+    const h = new URL(url, location.origin).hostname;
+    if(h === location.hostname) return url;
+    if(h.endsWith('dlive.sx') || h.endsWith('youtube.com') || h.endsWith('youtu.be')) return url;
+  }catch(e){}
   const isLocal = location.hostname==='localhost' || location.hostname.endsWith('.trycloudflare.com');
   const isHttp = url.startsWith('http://');
 
@@ -1624,6 +3454,22 @@ function loadStream(vid,url){
 
 function switchSource(idx){
   if(!pl.match||!pl.sources[idx])return;
+  // Barrière côté lecteur : même si quelqu'un force l'appel depuis la console,
+  // une source VIP ne se lance pas sans abonnement actif.
+  if(pl.sources[idx].vipOnly && !isVIP()){ vipSourcePrompt(); return; }
+  // Source FLS : le lien réel est résolu à la demande côté serveur (quota
+  // RapidAPI). On vérifie avant de lancer le lecteur pour pouvoir expliquer
+  // l'échec au lieu d'afficher un écran noir.
+  if(pl.sources[idx].fls){
+    toast('📡 Connexion à la source…');
+    flsPreflight(pl.sources[idx]).then(ok => { if(ok) switchSourceNow(idx); });
+    return;
+  }
+  switchSourceNow(idx);
+}
+
+function switchSourceNow(idx){
+  if(!pl.match||!pl.sources[idx])return;
   pl.srcIdx=idx;
   const src=pl.sources[idx];
   // Update active in streams
@@ -1640,11 +3486,45 @@ function renderSourceSwitcher(){
   if(!el)return;
   if(pl.sources.length<=1){el.style.display='none';el.innerHTML='';return;}
   el.style.display='flex';
-  el.innerHTML=pl.sources.map((s,i)=>`
-    <button class="vp-src-btn${i===pl.srcIdx?' active':''}" onclick="switchSource(${i})">
-      <span class="vp-src-num">${i+1}</span>
-      <span class="vp-src-name">Source ${i+1}</span>
-    </button>`).join('');
+  // Tri : sources VIP en tête (meilleure qualité), puis par confiance
+  // décroissante. Les sources sans "confidence" (ajoutées à la main par
+  // l'admin) sont considérées fiables à 100%.
+  const order = pl.sources.map((s,i)=>({s,i}))
+    .sort((a,b)=> (b.s.vipOnly?1:0)-(a.s.vipOnly?1:0) || (b.s.confidence??1)-(a.s.confidence??1));
+  const userIsVip = isVIP();
+  el.innerHTML=order.map(({s,i})=>{
+    const isDlive = !!s.dlive;
+    const isFls = !!s.fls;
+    const pct = s.confidence!=null ? Math.round(s.confidence*100) : null;
+    const locked = s.vipOnly && !userIsVip;
+    return `
+    <button class="vp-src-btn${i===pl.srcIdx?' active':''}${s.vipOnly?' vp-src-vip':''}${locked?' vp-src-locked':''}"
+            onclick="${locked?'vipSourcePrompt()':'switchSource('+i+')'}">
+      ${s.vipOnly
+        ? `<span class="vp-src-badge">${locked?'🔒':'★'}</span>`
+        : `<span class="vp-src-num">${i+1}</span>`}
+      <span class="vp-src-name">${isDlive?'🔗 ':isFls?'📡 ':''}${escHtml(s.label||('Source '+(i+1)))}</span>
+      ${s.vipOnly?'<span class="vp-src-q">HD</span>':''}
+      ${!s.vipOnly&&pct!=null&&pct<100?`<span class="vp-src-conf">${pct}%</span>`:''}
+    </button>`;
+  }).join('');
+}
+
+// Clic sur une source VIP verrouillée
+function vipSourcePrompt(){
+  toast('🔒 Source haute qualité réservée aux VIP');
+  setTimeout(()=>{ try{ openVIP(); }catch(e){} }, 700);
+}
+
+// Choisit l'index de démarrage : la meilleure source autorisée pour cet
+// utilisateur. Un non-VIP ne doit jamais démarrer sur une source verrouillée.
+function bestAllowedSourceIdx(sources){
+  if(!sources || !sources.length) return 0;
+  const vip = isVIP();
+  const ranked = sources.map((s,i)=>({s,i}))
+    .filter(({s}) => vip || !s.vipOnly)
+    .sort((a,b)=> (b.s.vipOnly?1:0)-(a.s.vipOnly?1:0) || (b.s.confidence??1)-(a.s.confidence??1));
+  return ranked.length ? ranked[0].i : 0;
 }
 
 
@@ -1671,6 +3551,42 @@ function openSingle(m, skipGate){ haptic(8);
   if(!m.streamUrl && m.streamSources?.length){
     m.streamUrl=m.streamSources[0].url;
   }
+  // Le fournisseur FLS vient de refuser ce flux (quota, 404…) : on écarte ses
+  // sources pour cette ouverture, sinon on relancerait le lecteur sur une URL
+  // dont on sait déjà qu'elle ne répondra pas.
+  if(m._flsDead && Date.now()-m._flsDead < 5*60000 && m.streamSources?.length){
+    const alt=m.streamSources.findIndex(s=>!s.fls);
+    m.streamActiveIdx = alt>=0 ? alt : 0;
+    m.streamUrl = alt>=0 ? m.streamSources[alt].url : null;
+  }
+  // Source FLS en position de départ : son URL réelle est résolue à la
+  // demande côté serveur (quota RapidAPI). On la valide AVANT d'ouvrir le
+  // lecteur, et on bascule automatiquement sur une autre source si le
+  // fournisseur ne répond pas.
+  const _flsSel = m.streamSources && m.streamSources[m.streamActiveIdx||0];
+  const _flsGiveUp = m._flsDead && Date.now() - m._flsDead < 5*60000;
+  if(_flsSel && _flsSel.fls && !m._flsChecking && !_flsGiveUp){
+    m._flsChecking = true;
+    toast('\u{1F4E1} Connexion \u00e0 la source\u2026');
+    flsPreflight(_flsSel).then(ok => {
+      m._flsChecking = false;
+      if(ok){ m._flsDead = 0; openSingle(m, true); return; }
+      const alt = (m.streamSources||[]).findIndex(s => !s.fls);
+      if(alt >= 0){
+        m.streamActiveIdx = alt;
+        m.streamUrl = m.streamSources[alt].url;
+        openSingle(m, true);
+        return;
+      }
+      // Aucune autre source : on ouvre quand m\u00eame le lecteur sur l'\u00e9cran
+      // \u00ab pas de flux disponible \u00bb \u2014 un clic sans le moindre effet donne
+      // l'impression que l'app est cass\u00e9e.
+      m._flsDead = Date.now();
+      m.streamUrl = null;
+      openSingle(m, true);
+    });
+    return;
+  }
   if(multiOpen){
     // Si multi est ouvert, proposer d'ajouter à la grille plutôt
     if(slots.length<4&&!slots.find(s=>s.match.id===m.id)){
@@ -1679,7 +3595,11 @@ function openSingle(m, skipGate){ haptic(8);
   }
   pl.match=m;
   pl.sources=m.streamSources||[];
-  pl.srcIdx=m.streamActiveIdx||0;
+  // On ne démarre jamais un non-VIP sur une source verrouillée
+  pl.srcIdx = m.streamActiveIdx||0;
+  if(pl.sources && pl.sources[pl.srcIdx] && pl.sources[pl.srcIdx].vipOnly && !isVIP()){
+    pl.srcIdx = bestAllowedSourceIdx(pl.sources);
+  }
   const live=isLive(m),fin=isFin(m),min=getMin(m);
   const hn=m.homeTeam.shortName||m.homeTeam.name,an=m.awayTeam.shortName||m.awayTeam.name;
   setCrest('hud-c1',m.homeTeam.crest,hn);setCrest('hud-c2',m.awayTeam.crest,an);
@@ -1742,10 +3662,27 @@ function openSingle(m, skipGate){ haptic(8);
   if(pl.hasStream&&!isEmbed){ loadStream(vid, m.streamUrl); }
   else if(!isEmbed){vid.src='';plSetPlay(false);}
   $('modal').classList.add('open');document.body.style.overflow='hidden';plShow();
+  // Onglets Détails/Chat — uniquement pour un match de foot (pas une chaîne TV)
+  // déjà commencé (en direct ou terminé). Sinon comportement chat inchangé.
+  const showTabs=!m._isTV&&(live||fin);
+  const tabsEl=$('stream-tabs');
+  if(showTabs){
+    tabsEl.style.display='';
+    streamTab='details';
+    m._seenLuEvents=null;m._statsCache=null;m._playersStatsCache=null;
+    resetDetTabs();
+    switchStreamTab('details'); // BUG corrigé : sans cet appel synchrone, details-section
+                                 // restait display:none tant que le setTimeout(chat) plus bas
+                                 // n'avait pas tourné — d'où "rien n'affiche au 1er clic".
+    loadDetails(m,false);
+  } else if(tabsEl){
+    tabsEl.style.display='none';
+    $('details-section').style.display='none';
+  }
   // Chat dès qu'une source/chaîne est assignée au match (peu importe si live,
   // à venir ou terminé) — disparaît automatiquement dès qu'il n'y a plus de source.
   if(m.streamUrl){
-    setTimeout(function(){ chatOpen(m.id); }, 80);
+    setTimeout(function(){ chatOpen(m.id); if(showTabs)switchStreamTab(streamTab); }, 80);
   } else {
     chatClose();
   }
@@ -1950,6 +3887,9 @@ function showYTFrame(videoId, title){
 
 function closeSingle(){
   clearInterval(pl.timer);clearTimeout(pl.hideTimer);
+  const tabsEl=$('stream-tabs');if(tabsEl)tabsEl.style.display='none';
+  const detSec=$('details-section');if(detSec)detSec.style.display='none';
+  closePlayerBio();
   destroyPlayers();
   const v=$('main-vid');if(v){v.pause();v.src='';v.onplay=v.onpause=v.ontimeupdate=null;}
   document.getElementById('stream-iframe')?.remove();
@@ -2117,6 +4057,14 @@ function openMulti(firstMatch){
 function addToMulti(m){
   if(slots.length>=4){toast('Maximum 4 streams');return;}
   if(slots.find(s=>s.match.id===m.id)){toast('Match déjà en grille');return;}
+  // Une source FLS doit être résolue avant d'entrer dans la grille, sinon la
+  // tuile afficherait un carré noir le temps de l'aller-retour serveur.
+  const sel = m.streamSources && m.streamSources[m.streamActiveIdx||0];
+  if(sel && sel.fls && !m._flsChecking){
+    m._flsChecking = true;
+    flsPreflight(sel).then(ok => { m._flsChecking = false; if(ok) addToMulti(m); });
+    return;
+  }
   slots.push({match:m,muted:false});
   closeDrawer();
   renderGrid();
@@ -2752,6 +4700,10 @@ function attachAdminListener(uid){
   db.ref('admins/'+uid).on('value', snap=>{
     isAdminCache = snap.exists();
     updateAuthUI();
+    // Le statut admin arrive de façon asynchrone, souvent APRÈS les tentatives
+    // d'affichage programmées au démarrage : c'est pour ça que le bouton de
+    // débogage n'apparaissait pas. On le monte dès que le statut est confirmé.
+    try{ dbgMount(); }catch(e){}
   });
 }
 function detachAdminListener(uid){
@@ -2762,106 +4714,263 @@ function detachAdminListener(uid){
 let adminOpen = false;
 let adminDate = null;
 
+// Entrée "Installer l'application" — visible seulement si l'app n'est pas déjà
+// installée ET que le navigateur la déclare installable (ou qu'on est sur iOS,
+// où l'installation est manuelle).
+function pwaInstallItem(){
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  if(standalone || !pwaCanInstall) return '';
+  return '<button class="pf-list-item" onclick="installPWA()">'
+    + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+    + '<span>Installer l\'application</span>'
+    + '<svg class="pf-list-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="13" height="13"><path d="M9 18l6-6-6-6"/></svg>'
+  + '</button>';
+}
+
+function renderReferralCard(){
+  if(!currentUser) return '';
+  if(!referralInfo){
+    loadReferralInfo().then(()=>{ if(page==='account') renderContent(); });
+    return '<div class="pf-card pf-ref-card"><div class="pf-ref-loading"><div class="spinner" style="width:20px;height:20px"></div></div></div>';
+  }
+  const link = location.origin + '/?ref=' + referralInfo.code;
+  const dots = [0,1,2].map(i => '<span class="pf-ref-dot'+(i < referralInfo.progress ? ' on' : '')+'"></span>').join('');
+  return '<div class="pf-card pf-ref-card">'
+    + '<div class="pf-ref-head">'
+      + '<div class="pf-ref-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>'
+      + '<div><div class="pf-ref-title">Parraine tes amis</div><div class="pf-ref-sub">3 amis VIP = 3 mois offerts pour toi</div></div>'
+    + '</div>'
+    + '<div class="pf-ref-link-row">'
+      + '<span class="pf-ref-link-txt">'+escHtml(link)+'</span>'
+      + '<button class="pf-ref-copy-btn" onclick="copyReferralLink()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>'
+    + '</div>'
+    + '<div class="pf-ref-progress-row">'
+      + '<div class="pf-ref-dots">'+dots+'</div>'
+      + '<span class="pf-ref-progress-txt">'+referralInfo.progress+'/3 filleuls VIP</span>'
+    + '</div>'
+    + (referralInfo.monthsEarned > 0 ? '<div class="pf-ref-earned">🎁 '+referralInfo.monthsEarned+' mois VIP déjà offerts grâce à toi</div>' : '')
+    + '<button class="pf-ref-howto-btn" onclick="toggleRefHowto()">'
+      + '<span>Comment ça marche ?</span>'
+      + '<svg id="pf-ref-howto-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12"><path d="M6 9l6 6 6-6"/></svg>'
+    + '</button>'
+    + '<div class="pf-ref-howto" id="pf-ref-howto" style="display:none">'
+      + '<div class="pf-ref-howto-step"><span class="pf-ref-howto-num">1</span><span>Partage ton lien avec tes amis (bouton copier ci-dessus)</span></div>'
+      + '<div class="pf-ref-howto-step"><span class="pf-ref-howto-num">2</span><span>Un ami clique ton lien puis crée son compte — il est automatiquement lié à toi</span></div>'
+      + '<div class="pf-ref-howto-step"><span class="pf-ref-howto-num">3</span><span>Dès qu\'il <b>paie un abonnement VIP</b> (une clé test ne compte pas), il devient un filleul validé</span></div>'
+      + '<div class="pf-ref-howto-step"><span class="pf-ref-howto-num">🎁</span><span>Tous les <b>3 filleuls payants</b>, tu reçois automatiquement <b>3 mois de VIP gratuits</b>, ajoutés à ton compte</span></div>'
+    + '</div>'
+  + '</div>';
+}
+
 function renderAccount(){
   const vipActive = isVIP();
   const vipExpTxt = (vipActive && vipLive.exp && vipLive.exp!==Infinity) ? new Date(vipLive.exp).toLocaleDateString('fr-FR') : '';
 
   const ICON_VIP = '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg>';
-  const VIP_CARD_HTML = '<div class="vip-card" onclick="openVIP()"><div class="vip-card-border"></div><div class="vip-card-left"><div class="vip-crown"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg></div><div><div class="vip-card-title" id="vip-card-title">'+(vipActive?'VIP Actif \u2713':'Passer en VIP')+'</div><div class="vip-card-sub" id="vip-card-sub">'+(vipActive?'Acc\u00e8s Premium \u00b7 Sans pub':'Acc\u00e8s illimit\u00e9 \u00b7 Sans pub')+'</div></div></div><div class="vip-badge" id="vip-badge"><span id="vip-badge-txt">'+(vipActive?'G\u00e9rer':'Voir les offres')+'</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="13" height="13"><path d="M9 18l6-6-6-6"/></svg></div></div>';
 
   if(currentUser){
     const rawName = currentUser.displayName || currentUser.email.split('@')[0] || 'Utilisateur';
     const name = escHtml(rawName);
     const email = escHtml(currentUser.email || '');
-    const photo = currentUser.photoURL;
+    // myPhoto (Realtime DB) prioritaire sur photoURL (photo Google par défaut)
+    const photo = myPhoto || currentUser.photoURL;
     const initial = rawName[0].toUpperCase();
+    const nameClass = (vipActive && myNameColor) ? ' name-shine name-shine-'+myNameColor : '';
 
-    return '<div class="acc-wrap">'
-      + '<div class="acc-hero-connected">'
-        + '<div class="acc-avatar-wrap">'
+    // Badge avatar : upload photo réservé aux VIP, cadenas sinon
+    const ICON_CAMERA = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
+    const ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+    const avatarBadge = vipActive
+      ? '<button class="pf-avatar-upload-btn" onclick="triggerAvatarUpload()" title="Changer la photo (VIP)">'+ICON_CAMERA+'</button>'
+      : '<div class="pf-avatar-locked" onclick="openVIP()" title="Photo de profil réservée aux VIP">'+ICON_LOCK+'</div>';
+
+    // Couleur de pseudo — VIP uniquement. Pastille discrète à côté du pseudo
+    // qui déplie un petit panneau, plutôt qu'une grosse card fixe.
+    const colorNames = ['Or','Chrome','Braise','Glacier','Améthyste','Émeraude'];
+    const colorToggle = vipActive
+      ? '<button class="pf-color-toggle'+(myNameColor?' pf-color-toggle-'+myNameColor:'')+'" onclick="togglePseudoColors()" title="Couleur du pseudo (VIP)"><span class="pf-color-toggle-dot"></span></button>'
+      : '';
+    const colorPanel = vipActive
+      ? '<div class="pf-color-pop" id="pf-color-pop" style="display:'+(_pseudoColorsOpen?'':'none')+'">'
+        + '<div class="pf-color-pop-title">Couleur du pseudo</div>'
+        + '<div class="pf-color-pop-grid">'
+          + [1,2,3,4,5,6].map(n=>'<button class="pf-color-swatch pf-color-swatch-'+n+(myNameColor==n?' on':'')+'" onclick="setNameColor('+n+')" title="'+colorNames[n-1]+'"></button>').join('')
+        + '</div>'
+        + '<button class="pf-color-none'+(!myNameColor?' on':'')+'" onclick="setNameColor(null)">Aucune couleur</button>'
+      + '</div>'
+      : '';
+
+    return '<div class="pf-wrap">'
+
+      // ── Hero ──
+      + '<div class="pf-hero">'
+        + '<div class="pf-avatar-wrap">'
           + (photo
-              ? '<img src="'+escHtml(photo)+'" class="acc-avatar-photo" referrerpolicy="no-referrer" alt="">'
-              : '<div class="acc-avatar-initials">'+initial+'</div>')
-          + (vipActive ? '<div class="acc-avatar-vip-dot">'+ICON_VIP+'</div>' : '')
+              ? '<img src="'+escHtml(photo)+'" class="pf-avatar-photo" referrerpolicy="no-referrer" alt="">'
+              : '<div class="pf-avatar-initials">'+initial+'</div>')
+          + avatarBadge
         + '</div>'
-        + '<div class="acc-hero-info">'
-          + '<div class="acc-display-name-row">'
-            + '<span class="acc-display-name" id="acc-display-name">'+name+'</span>'
-            + '<button class="acc-edit-pseudo-btn" onclick="openEditPseudo()" title="Modifier"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'
-          + '</div>'
-          + '<div class="acc-email-txt">'+email+'</div>'
-          + '<div class="acc-uid-row" onclick="copyMyUid()" title="Copier mon identifiant">'
-            + '<span class="acc-uid-label">ID :</span><span class="acc-uid-val">'+escHtml(currentUser.uid)+'</span>'
-            + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
-          + '</div>'
+        + '<input type="file" id="avatar-file-input" accept="image/*" style="display:none" onchange="uploadAvatarPhoto(this.files[0])">'
+        + '<div class="pf-name-row">'
+          + '<span class="pf-name'+nameClass+'">'+name+'</span>'
+          + (vipActive ? '<span style="color:var(--gold-3,#e8a527);display:flex" title="VIP">'+ICON_VIP+'</span>' : '')
+          + colorToggle
+          + '<button class="pf-edit-btn" onclick="openEditPseudo()" title="Modifier"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'
+        + '</div>'
+        + colorPanel
+        + '<div class="pf-email">'+email+'</div>'
+        + '<button class="pf-uid-chip" onclick="copyMyUid()" title="Copier mon identifiant">'
+          + '<span>ID '+escHtml(currentUser.uid.slice(0,10))+'…</span>'
+          + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="10" height="10"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
+        + '</button>'
+      + '</div>'
+
+      + '<div class="pf-pseudo-edit" id="pseudo-edit-block" style="display:none">'
+        + '<label class="pf-pseudo-label">Nouveau pseudo</label>'
+        + '<div class="pf-pseudo-row">'
+          + '<input id="pseudo-input" class="pf-pseudo-input" type="text" placeholder="Ton pseudo" maxlength="24" autocomplete="off">'
+          + '<button id="pseudo-save-btn" class="pf-pseudo-ok" onclick="savePseudo()">OK</button>'
+          + '<button class="pf-pseudo-cancel" onclick="cancelEditPseudo()"><svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>'
         + '</div>'
       + '</div>'
 
-      + '<div class="acc-pseudo-edit-block" id="pseudo-edit-block" style="display:none">'
-        + '<label class="acc-pseudo-label">Nouveau pseudo</label>'
-        + '<div class="acc-pseudo-row">'
-          + '<input id="pseudo-input" class="acc-pseudo-input" type="text" placeholder="Ton pseudo" maxlength="24" autocomplete="off">'
-          + '<button id="pseudo-save-btn" class="acc-pseudo-save-btn" onclick="savePseudo()">OK</button>'
-          + '<button class="acc-pseudo-cancel-btn" onclick="cancelEditPseudo()"><svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>'
+      // ── VIP (card dorée — animations déjà gérées en CSS via ::before) ──
+      + '<div class="pf-card pf-vip-card'+(vipActive?' pf-vip-card-active':'')+'" onclick="openVIP()">'
+        + '<div class="pf-vip-ico">'+ICON_VIP+'</div>'
+        + '<div class="pf-vip-info">'
+          + '<div class="pf-vip-title">'+(vipActive?'VIP actif':'Passer en VIP')+'</div>'
+          + '<div class="pf-vip-sub">'+(vipActive?'Expire le '+vipExpTxt:'Sans pub · Streams HD · Multi-stream')+'</div>'
         + '</div>'
+        + '<svg class="pf-vip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><path d="M9 18l6-6-6-6"/></svg>'
       + '</div>'
 
-      + (vipActive
-          ? '<div class="acc-vip-active-banner">'+ICON_VIP+'<span>VIP actif \u00b7 Expire le '+vipExpTxt+'</span></div>'
-          : '')
+      // ── Parrainage ──
+      + renderReferralCard()
 
-      + (isAdmin() ? '<div style="display:flex;justify-content:center">'
-        + '<button class="acc-admin-trigger" onclick="openAdminPanel()">\u2699\uFE0F Administration</button>'
-        + '</div>' : '')
+      // ── Compte ──
+      + '<div class="pf-section-label">Compte</div>'
+      + '<div class="pf-list">'
+        + '<button class="pf-list-item" onclick="openFeedbackModal()">'
+          + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+          + '<span>Signaler un bug / Suggérer</span>'
+          + (vipActive ? '<span class="pf-prio-tag">Prioritaire</span>' : '')
+          + '<svg class="pf-list-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="13" height="13"><path d="M9 18l6-6-6-6"/></svg>'
+        + '</button>'
+        + pwaInstallItem()
+        + (isAdmin() ? '<button class="pf-list-item" onclick="openAdminPanel()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>Administration</span><svg class="pf-list-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="13" height="13"><path d="M9 18l6-6-6-6"/></svg></button>' : '')
+        + '<button class="pf-list-item pf-list-item-danger" onclick="signOut()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg><span>Se déconnecter</span></button>'
+      + '</div>'
 
-      + VIP_CARD_HTML
-
-      + '<button class="acc-signout-btn" onclick="signOut()">'
-        + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>'
-        + ' Se d\u00e9connecter'
-      + '</button>'
-
-      + '<div class="acc-footer">\u00a9 2026 Okin Stream</div>'
+      + '<div class="pf-footer">© 2026 Okin Stream</div>'
     + '</div>';
   }
 
   // ── NON CONNECTE ──
-  const G_BTN = '<button class="acc-btn-google" onclick="signInWithGoogle()"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>Continuer avec Google</button>';
+  const G_BTN = '<button class="pf-auth-google" onclick="signInWithGoogle()"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>Continuer avec Google</button>';
 
-  return '<div class="acc-wrap">'
-    + '<div class="acc-hero">'
-      + '<div class="acc-hero-ball"><img src="/ball.png" width="52" height="52" style="object-fit:contain;display:block" alt=""></div>'
-      + '<div class="acc-app-name">OKIN STREAM</div>'
-      + '<div class="acc-hero-tagline">Connecte-toi pour synchroniser ton VIP</div>'
+  let pendingRef = null;
+  try{ pendingRef = localStorage.getItem('pending_referral'); }catch(e){}
+
+  return '<div class="pf-wrap">'
+    + '<div class="pf-hero pf-hero-guest">'
+      + '<div class="pf-hero-ball"><img src="/ball.png" width="56" height="56" style="object-fit:contain;display:block" alt=""></div>'
+      + '<div class="pf-app-name">OKIN STREAM</div>'
+      + '<div class="pf-hero-tagline">Connecte-toi pour synchroniser ton VIP</div>'
     + '</div>'
 
-    + '<div class="acc-auth-card">'
+    + (pendingRef ? '<div class="pf-ref-invite-banner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span>Tu as été invité·e par un ami — connecte-toi pour en profiter</span></div>' : '')
+
+    + '<div class="pf-card pf-auth-card">'
       + G_BTN
-      + '<div class="acc-auth-or"><span>ou</span></div>'
-      + '<button class="acc-btn-email" onclick="openAuthModal(\'login\')">'
+      + '<div class="pf-auth-or"><span>ou</span></div>'
+      + '<button class="pf-auth-email" onclick="openAuthModal(\'login\')">'
         + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>'
         + ' Connexion par email'
       + '</button>'
-      + '<div class="acc-auth-hint">Pas encore de compte ? '
-        + '<button class="acc-auth-hint-link" onclick="openAuthModal(\'register\')">S\'inscrire</button>'
+      + '<div class="pf-auth-hint">Pas encore de compte ? '
+        + '<button class="pf-auth-hint-link" onclick="openAuthModal(\'register\')">S\'inscrire</button>'
       + '</div>'
     + '</div>'
 
-    + (isAdmin() ? '<div style="display:flex;justify-content:center">'
-      + '<button class="acc-admin-trigger" onclick="openAdminPanel()">\u2699\uFE0F Administration</button>'
-      + '</div>' : '')
+    + (isAdmin() ? '<div class="pf-list"><button class="pf-list-item" onclick="openAdminPanel()"><span>⚙️ Administration</span></button></div>' : '')
 
-    + VIP_CARD_HTML
-
-    + '<div class="acc-features">'
-      + '<div class="acc-feature"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg><div><div class="acc-feature-title">VIP li\u00e9 au compte</div><div class="acc-feature-sub">Ton acc\u00e8s VIP suit ton compte partout</div></div></div>'
-      + '<div class="acc-feature"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><div><div class="acc-feature-title">Favoris synchronis\u00e9s</div><div class="acc-feature-sub">Retrouve tes matchs sur tous tes appareils</div></div></div>'
+    + '<div class="pf-card pf-vip-card" onclick="openVIP()">'
+      + '<div class="pf-vip-ico">'+ICON_VIP+'</div>'
+      + '<div class="pf-vip-info"><div class="pf-vip-title">Passer en VIP</div><div class="pf-vip-sub">Sans pub · Streams HD · Multi-stream</div></div>'
+      + '<svg class="pf-vip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><path d="M9 18l6-6-6-6"/></svg>'
     + '</div>'
-    + '<div class="acc-footer">\u00a9 2026 Okin Stream</div>'
+
+    + '<div class="pf-section-label">Pourquoi se connecter</div>'
+    + '<div class="pf-list">'
+      + '<div class="pf-feature"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg><div><div class="pf-feature-title">VIP lié au compte</div><div class="pf-feature-sub">Ton accès VIP suit ton compte partout</div></div></div>'
+      + '<div class="pf-feature"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><div><div class="pf-feature-title">Favoris synchronisés</div><div class="pf-feature-sub">Retrouve tes matchs sur tous tes appareils</div></div></div>'
+      + '<div class="pf-feature"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><div><div class="pf-feature-title">Programme de parrainage</div><div class="pf-feature-sub">3 amis VIP = 3 mois offerts pour toi</div></div></div>'
+    + '</div>'
+    + '<div class="pf-footer">© 2026 Okin Stream</div>'
   + '</div>';
 }
 
 // Fix #2 : fonctions modification du pseudo
+// ── Photo de profil — upload réservé aux VIP (Firebase Storage) ──
+function triggerAvatarUpload(){
+  if(!isVIP()){ toast('Réservé aux membres VIP'); return; }
+  document.getElementById('avatar-file-input')?.click();
+}
+function uploadAvatarPhoto(file){
+  if(!file) return;
+  if(!isVIP()){ toast('Réservé aux membres VIP'); return; }
+  if(!currentUser || !db){ toast('Non connecté'); return; }
+  if(!file.type.startsWith('image/')){ toast('Choisis une image'); return; }
+  if(file.size > 10*1024*1024){ toast('Image trop lourde (10 Mo max)'); return; }
+  toast('📤 Traitement de la photo…');
+
+  const reader = new FileReader();
+  reader.onerror = () => toast('❌ Lecture du fichier impossible');
+  reader.onload = ev => {
+    const img = new Image();
+    img.onerror = () => toast('❌ Image illisible');
+    img.onload = () => {
+      try{
+        // Recadrage carré centré + redimensionnement 256px + compression JPEG
+        const SIZE = 256;
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = SIZE;
+        const ctx = canvas.getContext('2d');
+        const min = Math.min(img.width, img.height);
+        ctx.drawImage(img, (img.width-min)/2, (img.height-min)/2, min, min, 0, 0, SIZE, SIZE);
+
+        // On descend la qualité par paliers jusqu'à passer sous 90 Ko, pour ne
+        // pas alourdir la Realtime Database avec une énorme chaîne base64.
+        let dataUrl = '', q = 0.82;
+        for(let i=0; i<5; i++){
+          dataUrl = canvas.toDataURL('image/jpeg', q);
+          if(dataUrl.length < 90000) break;
+          q -= 0.15;
+        }
+        if(dataUrl.length > 120000){ toast('❌ Image trop lourde après compression'); return; }
+
+        db.ref('users/'+currentUser.uid+'/photo').set(dataUrl)
+          .then(() => { myPhoto = dataUrl; toast('✅ Photo mise à jour !'); renderContent(); })
+          .catch(err => {
+            console.warn('[avatar] écriture Firebase refusée:', err && err.message);
+            toast('❌ Enregistrement refusé (règles Firebase)');
+          });
+      }catch(e){
+        console.warn('[avatar]', e);
+        toast('❌ Traitement de l\'image impossible');
+      }
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+function removeAvatarPhoto(){
+  if(!currentUser || !db) return;
+  db.ref('users/'+currentUser.uid+'/photo').remove()
+    .then(()=>{ myPhoto=null; toast('Photo retirée'); renderContent(); })
+    .catch(()=>toast('Échec de la suppression'));
+}
+
 function copyMyUid(){
   if(!currentUser) return;
   navigator.clipboard?.writeText(currentUser.uid)
@@ -2909,6 +5018,7 @@ function openAdminPanel(){
   if(!isAdmin()){ toast("❌ Accès réservé à l'administrateur"); return; }
   adminOpen = true;
   adminDate = adminDate || todayKey();
+  attachFeedbackListener(); // alimente la pastille de l'onglet Retours dès l'ouverture
   renderAdminPanel();
   document.querySelectorAll('.bi[data-pg]').forEach(e => {
     e.onclick = () => setPage(e.dataset.pg);
@@ -3002,6 +5112,11 @@ function renderAdminPanel(){
             <input class="adm-custom" id="admcustom-${id}" placeholder="🔗 URL personnalisée...">
             <button class="adm-custom-save" onclick="admSaveCustom('${id}')">OK</button>
           </div>
+          <!-- Marque l'URL personnalisée comme source VIP (meilleure qualité) -->
+          <label class="adm-vip-check">
+            <input type="checkbox" id="admvip-${id}">
+            <span>★ Source VIP — meilleure qualité, réservée aux abonnés</span>
+          </label>
           <div class="adm-form-actions">
             <button class="adm-save-btn" onclick="admSave('${id}')">
               <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
@@ -3030,8 +5145,11 @@ function renderAdminPanel(){
       <button class="adm-tab${adminTab==='tv'?' active':''}" onclick="adminTab='tv';renderAdminPanel()">📺 Chaînes TV</button>
       <button class="adm-tab${adminTab==='vip'?' active':''}" onclick="adminTab='vip';renderAdminPanel()">🔑 Clés VIP</button>
       <button class="adm-tab${adminTab==='admins'?' active':''}" onclick="adminTab='admins';renderAdminPanel()">👤 Admins</button>
+      <button class="adm-tab${adminTab==='dlive'?' active':''}" onclick="adminTab='dlive';renderAdminPanel()">🔗 dlive</button>
+      <button class="adm-tab${adminTab==='fls'?' active':''}" onclick="adminTab='fls';renderAdminPanel()">📡 FLS</button>
+      <button class="adm-tab${adminTab==='feedback'?' active':''}" onclick="adminTab='feedback';renderAdminPanel()">📬 Retours${_fbOpenCount?`<span class="adm-tab-dot">${_fbOpenCount}</span>`:''}</button>
     </div>
-    ${adminTab==='vip'?renderAdminVIP():adminTab==='tv'?`${renderAdminTV()}`:adminTab==='admins'?renderAdminUsers():`<div class="adm-progress-bar"><div class="adm-progress-fill" style="width:${pct}%"></div></div>
+    ${adminTab==='vip'?renderAdminVIP():adminTab==='tv'?`${renderAdminTV()}`:adminTab==='admins'?renderAdminUsers():adminTab==='dlive'?renderAdminDlive():adminTab==='fls'?renderAdminFls():adminTab==='feedback'?renderAdminFeedback():`<div class="adm-progress-bar"><div class="adm-progress-fill" style="width:${pct}%"></div></div>
     <div class="adm-stats-row">
       <div class="adm-stat-item"><div class="adm-stat-val">${dayMatches.length}</div><div class="adm-stat-lbl">Matchs</div></div>
       <div class="adm-stat-item"><div class="adm-stat-val" style="color:var(--green)">${streamsCount}</div><div class="adm-stat-lbl">Streamés</div></div>
@@ -3046,6 +5164,226 @@ function renderAdminPanel(){
   if(adminTab==='matches') setTimeout(admAutoCheck, 300);
   if(adminTab==='vip') setTimeout(loadAdminVIPKeys, 100);
   if(adminTab==='admins') setTimeout(loadAdminUsersList, 100);
+  if(adminTab==='dlive' && !dliveSyncMeta.lastSync) setTimeout(()=>syncDlive().then(()=>{ if(adminOpen) renderAdminPanel(); }), 100);
+  // Garde-fou : syncFls() finit par re-rendre le panneau, donc sans ce test
+  // d'ancienneté on repartirait en boucle infinie rendu → sync → rendu.
+  if(adminTab==='fls' && Date.now()-(flsSyncMeta.lastSync||0) > 60000){
+    setTimeout(()=>syncFls().then(()=>{ if(adminOpen && adminTab==='fls') renderAdminPanel(); }).catch(()=>{}), 100);
+  }
+  if(adminTab==='feedback') setTimeout(loadAdminFeedback, 60);
+}
+
+// ─── Onglet admin dlive ───
+function renderAdminDlive(){
+  const meta = dliveSyncMeta;
+  const lastSyncTxt = meta.lastSync ? new Date(meta.lastSync).toLocaleString('fr-FR') : 'Jamais';
+  const pendingList = (kind) => {
+    const list = kind==='channel' ? dlivePendingChannels : dlivePendingEvents;
+    if(!list.length) return `<div class="adm-empty" style="padding:20px 0">Rien à valider ${kind==='channel'?'côté chaînes':'côté matchs'} 👍</div>`;
+    return list.map(p => `
+      <div class="dlive-pending-card">
+        <div class="dlive-pending-name">${escHtml(p.dliveName)}</div>
+        <div class="dlive-pending-candidates">
+          ${p.candidates.map(c => `
+            <button class="dlive-candidate-btn" onclick="confirmDliveMapping('${kind}','${p.key}',${JSON.stringify(p.dliveName)},${JSON.stringify(p.dliveId)},${JSON.stringify(c.target)})">
+              <span>${escHtml(c.label||c.target)}</span>
+              <span class="dlive-candidate-score">${Math.round(c.score*100)}%</span>
+            </button>`).join('')}
+        </div>
+        <button class="dlive-ignore-btn" onclick="ignoreDliveMapping('${p.key}')">🚫 Ignorer définitivement</button>
+      </div>`).join('');
+  };
+  return `
+    <div class="dlive-admin-wrap">
+      <div class="dlive-sync-card">
+        <div class="dlive-sync-row"><span>Dernière sync</span><b>${lastSyncTxt}</b></div>
+        <div class="dlive-sync-row"><span>Chaînes matchées auto</span><b style="color:var(--green)">${meta.channelsMatched||0}</b></div>
+        <div class="dlive-sync-row"><span>Matchs matchés auto</span><b style="color:var(--green)">${meta.eventsMatched||0}</b></div>
+        <div class="dlive-sync-row"><span>En attente de validation</span><b style="color:var(--acc)">${(meta.channelsPending||0)+(meta.eventsPending||0)}</b></div>
+        <button class="dlive-sync-btn" onclick="adminSyncDlive()" id="dlive-sync-btn">🔄 Synchroniser maintenant</button>
+      </div>
+      <div class="adm-comp-header"><span>📺 Chaînes à valider (${dlivePendingChannels.length})</span></div>
+      ${pendingList('channel')}
+      <div class="adm-comp-header"><span>⚽ Matchs à valider (${dlivePendingEvents.length})</span></div>
+      ${pendingList('event')}
+    </div>`;
+}
+// ─── Onglet admin FLS (Football Live Stream API) ───
+// Le quota est la donnée la plus importante à afficher : chaque appel compte,
+// et l'admin doit voir d'un coup d'œil combien de lectures il reste avant
+// minuit UTC.
+function renderAdminFls(){
+  const q = flsQuota || {};
+  const meta = flsSyncMeta;
+  const lastSyncTxt = meta.lastSync ? new Date(meta.lastSync).toLocaleTimeString('fr-FR') : 'jamais';
+  const srvSyncTxt  = meta.serverSync ? new Date(meta.serverSync).toLocaleString('fr-FR') : 'jamais';
+  const resetTxt    = q.resetAt ? new Date(q.resetAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}) : '—';
+  const used = q.used||0, limit = q.limit||0;
+  const pct  = limit ? Math.min(100, Math.round(used/limit*100)) : 0;
+  const barColor = pct >= 90 ? 'var(--red)' : pct >= 60 ? 'var(--acc)' : 'var(--green)';
+
+  const pendingCards = !flsPending.length
+    ? '<div class="adm-empty" style="padding:20px 0">Rien à valider 👍</div>'
+    : flsPending.map(p => `
+      <div class="dlive-pending-card">
+        <div class="dlive-pending-name">${escHtml(p.title)}</div>
+        <div class="fls-pending-meta">${escHtml(p.league||'—')}${p.kickoff?' · '+escHtml(new Date(p.kickoff).toLocaleString('fr-FR')):''}</div>
+        <div class="dlive-pending-candidates">
+          ${p.candidates.map(c => `
+            <button class="dlive-candidate-btn" onclick='confirmFlsMapping(${JSON.stringify(p.key)},${JSON.stringify(p.flsId)},${JSON.stringify(c.target)},${JSON.stringify(p.title)})'>
+              <span>${escHtml(c.label)}</span>
+              <span class="dlive-candidate-score">${Math.round(c.score*100)}%</span>
+            </button>`).join('')}
+        </div>
+        <button class="dlive-ignore-btn" onclick='ignoreFlsMapping(${JSON.stringify(p.key)})'>🚫 Ignorer définitivement</button>
+      </div>`).join('');
+
+  return `
+    <div class="dlive-admin-wrap">
+      <div class="dlive-sync-card">
+        <div class="fls-quota-head">
+          <span>Quota RapidAPI du jour</span>
+          <b style="color:${barColor}">${used}/${limit||'?'}</b>
+        </div>
+        <div class="fls-quota-bar"><div class="fls-quota-fill" style="width:${pct}%;background:${barColor}"></div></div>
+        <div class="fls-quota-legend">
+          <span>Liste : ${q.listUsed||0}/${q.listReserve||0}</span>
+          <span>Lectures : ${q.linkUsed||0}</span>
+          <span>Reset ${resetTxt}</span>
+        </div>
+        <div class="dlive-sync-row"><span>État</span><b style="color:${!q.enabled?'var(--red)':q.blocked?'var(--acc)':'var(--green)'}">${!q.enabled?'Clé absente':q.blocked?'Bloqué — '+escHtml(q.blockedReason||''):'Actif ('+(q.mode||'proxy')+')'}</b></div>
+        ${q.blocked?`<div class="dlive-sync-row"><span>Reprise des appels</span><b>${new Date(q.blockedUntil).toLocaleString('fr-FR')}</b></div>`:''}
+        <div class="dlive-sync-row"><span>Dernier refresh serveur</span><b>${srvSyncTxt}</b></div>
+        <div class="dlive-sync-row"><span>Dernier matching local</span><b>${lastSyncTxt}</b></div>
+        <div class="dlive-sync-row"><span>Matchs proposés par l'API</span><b>${meta.total||0}</b></div>
+        <div class="dlive-sync-row"><span>Sources assignées auto</span><b style="color:var(--green)">${meta.matched||0}</b></div>
+        <div class="dlive-sync-row"><span>En attente de validation</span><b style="color:var(--acc)">${flsPending.length}</b></div>
+        ${meta.error?`<div class="dlive-sync-row"><span>Erreur</span><b style="color:var(--red)">${escHtml(String(meta.error))}</b></div>`:''}
+        <button class="dlive-sync-btn" onclick="adminSyncFls()" id="fls-sync-btn">🔄 Rematcher (gratuit)</button>
+        <button class="dlive-sync-btn" onclick="adminForceFlsRefresh()" id="fls-force-btn" style="margin-top:6px;opacity:.85">⚠️ Forcer un refresh API (−1 appel)</button>
+      </div>
+      <div class="adm-comp-header"><span>⚽ Matchs à valider (${flsPending.length})</span></div>
+      ${pendingCards}
+    </div>`;
+}
+
+// Rematch local : relit le cache serveur, ne coûte aucun appel RapidAPI.
+async function adminSyncFls(){
+  const btn = $('fls-sync-btn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Matching…'; }
+  try{ await syncFls(); toast('✅ Matching FLS terminé'); }
+  catch(e){ toast('❌ Erreur de matching'); }
+  if(adminOpen) renderAdminPanel();
+}
+
+// Refresh forcé de la liste côté serveur — dépense un appel du quota du jour,
+// d'où la confirmation explicite.
+async function adminForceFlsRefresh(){
+  if(!confirm('Forcer un appel /all-match ?\n\nCela consomme 1 appel sur le quota quotidien.')) return;
+  const btn = $('fls-force-btn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Appel en cours…'; }
+  try{
+    const r = await fetch('/api/fls/sync', {method:'POST'}).then(res=>res.json());
+    if(r.quota) flsQuota = r.quota;
+    toast(r.ok ? `✅ ${r.count??r.matches??0} matchs récupérés` : '⚠️ ' + (r.error||'échec'));
+    await syncFls();
+  }catch(e){ toast('❌ Erreur réseau'); }
+  if(adminOpen) renderAdminPanel();
+}
+
+// ═══════════════════════════════════════════════════
+// ── ADMIN — onglet Retours (bugs / failles / idées) ──
+// ═══════════════════════════════════════════════════
+let _fbItems = [];
+let _fbOpenCount = 0;
+let _fbFilter = 'open';
+let _fbListenerOn = false;
+
+function attachFeedbackListener(){
+  if(!db || _fbListenerOn) return;
+  _fbListenerOn = true;
+  db.ref('feedback').limitToLast(200).on('value', snap => {
+    const v = snap.val() || {};
+    _fbItems = Object.keys(v).map(k => Object.assign({id:k}, v[k]));
+    // Tri : d'abord les VIP (prioritaires), puis du plus récent au plus ancien
+    _fbItems.sort((a,b) => (b.vip?1:0)-(a.vip?1:0) || (b.ts||0)-(a.ts||0));
+    _fbOpenCount = _fbItems.filter(i => i.status !== 'done').length;
+    if(adminOpen && adminTab === 'feedback') renderAdminPanel();
+  }, err => console.warn('[feedback] lecture refusée:', err && err.message));
+}
+function loadAdminFeedback(){ attachFeedbackListener(); }
+
+function setFbFilter(f){ _fbFilter = f; renderAdminPanel(); }
+
+function fbSetStatus(id, status){
+  if(!db) return;
+  db.ref('feedback/'+id+'/status').set(status)
+    .then(()=>toast(status==='done'?'✅ Marqué traité':'Rouvert'))
+    .catch(()=>toast('Action refusée'));
+}
+function fbDelete(id){
+  if(!db) return;
+  if(!confirm('Supprimer définitivement ce signalement ?')) return;
+  db.ref('feedback/'+id).remove()
+    .then(()=>toast('Supprimé'))
+    .catch(()=>toast('Suppression refusée'));
+}
+function fbOpenShot(src){
+  const w = window.open('');
+  if(w) w.document.write('<img src="'+src+'" style="max-width:100%">');
+}
+
+function renderAdminFeedback(){
+  const TYPE = {bug:{l:'Bug',c:'#e5484d',i:'🐞'}, security:{l:'Faille',c:'#f59e0b',i:'🔐'}, idea:{l:'Idée',c:'#3b8bff',i:'💡'}};
+  const list = _fbItems.filter(i => _fbFilter==='all' ? true : (_fbFilter==='done' ? i.status==='done' : i.status!=='done'));
+  const counts = {
+    open: _fbItems.filter(i=>i.status!=='done').length,
+    done: _fbItems.filter(i=>i.status==='done').length,
+  };
+  return `
+    <div class="fba-wrap">
+      <div class="fba-filters">
+        <button class="fba-filter${_fbFilter==='open'?' on':''}" onclick="setFbFilter('open')">À traiter (${counts.open})</button>
+        <button class="fba-filter${_fbFilter==='done'?' on':''}" onclick="setFbFilter('done')">Traités (${counts.done})</button>
+        <button class="fba-filter${_fbFilter==='all'?' on':''}" onclick="setFbFilter('all')">Tous (${_fbItems.length})</button>
+      </div>
+      ${!list.length ? '<div class="adm-empty" style="padding:36px 0">Aucun signalement ici</div>' : list.map(it => {
+        const t = TYPE[it.type] || TYPE.bug;
+        const when = it.ts ? new Date(it.ts).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+        return `
+        <div class="fba-card${it.status==='done'?' fba-done':''}">
+          <div class="fba-top">
+            <span class="fba-type" style="--tc:${t.c}">${t.i} ${t.l}</span>
+            ${it.vip ? '<span class="fba-vip">VIP</span>' : ''}
+            <span class="fba-date">${escHtml(when)}</span>
+          </div>
+          <div class="fba-title">${escHtml(it.title||'(sans titre)')}</div>
+          <div class="fba-text">${escHtml(it.text||'')}</div>
+          ${Array.isArray(it.shots)&&it.shots.length ? `<div class="fba-shots">${it.shots.map(sh=>`<img src="${escHtml(sh)}" onclick="fbOpenShot(this.src)" alt="">`).join('')}</div>` : ''}
+          <div class="fba-meta">
+            <span>${escHtml(it.pseudo||'?')}</span>
+            ${it.email?`<span>· ${escHtml(it.email)}</span>`:''}
+          </div>
+          <div class="fba-actions">
+            ${it.status==='done'
+              ? `<button class="fba-btn" onclick="fbSetStatus('${it.id}','open')">↩ Rouvrir</button>`
+              : `<button class="fba-btn fba-btn-ok" onclick="fbSetStatus('${it.id}','done')">✓ Traité</button>`}
+            <button class="fba-btn fba-btn-del" onclick="fbDelete('${it.id}')">Supprimer</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+async function adminSyncDlive(){
+  const btn = $('dlive-sync-btn');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Synchronisation...'; }
+  try{
+    await fetch('/api/dlive/sync', {method:'POST'}); // force le serveur à refetch dlive
+    await syncDlive(); // relance le matching côté client avec les données fraîches
+    toast('✅ Sync dlive terminée');
+  }catch(e){ toast('❌ Erreur de sync'); }
+  if(adminOpen) renderAdminPanel();
 }
 
 const _admSelected={};
@@ -3187,10 +5525,15 @@ function admSave(id){
   const srcs=[...(_admSources[id]||[])];
   const inp=document.getElementById(`admcustom-${id}`);
   const cu=inp?.value.trim();
-  if(cu&&!srcs.find(s=>s.url===cu)) srcs.push({url:cu,label:'Custom'});
+  const vipChk=document.getElementById(`admvip-${id}`);
+  const asVip=!!(vipChk&&vipChk.checked);
+  if(cu&&!srcs.find(s=>s.url===cu)) srcs.push(asVip?{url:cu,label:'HD (VIP)',vipOnly:true}:{url:cu,label:'Custom'});
   if(!srcs.length){toast('❌ Sélectionne au moins une source');return;}
   const ts=Date.now();
-  const obj={sources:srcs,activeIdx:0,updatedAt:ts,url:srcs[0].url,label:srcs[0].label};
+  // activeIdx par défaut = première source NON VIP, pour que les visiteurs
+  // sans abonnement ne tombent pas sur une source verrouillée.
+  const defIdx=Math.max(0,srcs.findIndex(x=>!x.vipOnly));
+  const obj={sources:srcs,activeIdx:defIdx,updatedAt:ts,url:srcs[defIdx].url,label:srcs[defIdx].label};
 
   // 1. Mémoire immédiate (AVANT Firebase pour bloquer la race condition)
   streams[id]=obj;
@@ -3200,7 +5543,7 @@ function admSave(id){
   // 2. Sync match en mémoire
   const allM=Object.values(data.byDate).flat();
   const m=allM.find(x=>String(x.id)===id);
-  if(m){m.streamUrl=srcs[0].url;m.streamSources=srcs;m.streamActiveIdx=0;}
+  if(m){m.streamUrl=srcs[defIdx].url;m.streamSources=srcs;m.streamActiveIdx=defIdx;}
 
   // 3. Mise à jour DOM chirurgicale sans full re-render
   admUpdateCardBadge(id, obj, srcs);
@@ -3721,13 +6064,10 @@ function closeLegal() {
 // ═══════════════════════════════════════════════════
 
 // ─── PAIEMENT PAYPAL ─────────────────────────────
-function startPayment(){
-  window.open('https://www.paypal.com/ncp/payment/BH7BQGKEJVLP2', '_blank');
-}
-
-function startPaymentLifetime(){
-  // Offre 20€ / 6 mois (nom de fonction conservé pour compatibilité avec le HTML existant)
-  window.open('https://www.paypal.com/ncp/payment/N8NRJ7FTAVRBN', '_blank');
+// Offre unique : 5€ / an — ⚠️ REMPLACE le lien ci-dessous par ton vrai lien
+// de paiement PayPal (bouton "Payer avec PayPal" créé sur paypal.com/ncp).
+function startPaymentAnnual(){
+  window.open('https://www.paypal.com/ncp/payment/REMPLACE_MOI_5AN', '_blank');
 }
 
 // isVIP() ne lit QUE le cache maintenu par le listener Firebase live (vipLive).
@@ -3782,13 +6122,10 @@ function updateVIPOv(){
       <div class="vip-status-crown"><svg viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg></div>
       <div class="vip-status-info"><div class="vip-status-title">VIP Actif</div><div class="vip-status-exp">Expire le ${expTxt}</div></div>
       <div class="vip-status-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><polyline points="20 6 9 17 4 12"/></svg></div>
-    </div>
-    <div class="vip-perks">
-      <div class="vip-perk"><span class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></span><span>Sans publicité</span></div>
-      <div class="vip-perk"><span class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span><span>Streams prioritaires</span></div>
-      <div class="vip-perk"><span class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></span><span>Alertes en temps réel</span></div>
-      <div class="vip-perk"><span class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/></svg></span><span>Multi-stream illimité</span></div>
     </div>`;
+    // Les avantages ne sont plus répétés ici : la liste détaillée plus bas
+    // (vip-perks-list) fait déjà le travail, les afficher deux fois alourdissait
+    // le haut de la page pour rien.
     // Offres et champ clé toujours visibles même si VIP actif
     offersEl.style.display='';
     if(keyBlock)keyBlock.style.display='';
@@ -3832,8 +6169,13 @@ function activateVIPKey(){
         const messages = {
           not_found: 'Clé invalide', disabled: 'Clé désactivée',
           already_used: 'Clé déjà utilisée', invalid_input: 'Clé invalide',
+          rate_limited: 'Trop de tentatives, réessaie dans quelques minutes',
+          // Le serveur n'a pas pu écrire dans Firebase (secret absent/expiré) :
+          // on le dit clairement au lieu d'annoncer un faux succès.
+          write_failed: 'Erreur serveur — la clé n\'a pas pu être activée, contacte le support',
         };
         toast('❌ ' + (messages[json.error] || 'Erreur de vérification'));
+        if(json.error === 'write_failed') console.error('[VIP] write_failed:', json.detail);
         return;
       }
       // vipLive sera mis à jour automatiquement par le listener live sur users/{uid}/vip
@@ -4027,6 +6369,20 @@ function renderAdminVIP(){
         </button>
       </div>
     </div>
+    <!-- Recherche d'un utilisateur par son identifiant -->
+    <div class="adm-lookup-block">
+      <div class="adm-vip-gen-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        Rechercher un utilisateur
+      </div>
+      <div class="adm-vip-gen-row">
+        <input id="adm-lookup-input" class="adm-lookup-input" type="text" placeholder="Coller un ID utilisateur…" autocomplete="off" spellcheck="false"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();admLookupUser();}">
+        <button class="adm-save-btn" onclick="admLookupUser()" id="adm-lookup-btn">Chercher</button>
+      </div>
+      <div id="adm-lookup-result" class="adm-lookup-result"></div>
+    </div>
+
     <div class="adm-vip-keys-list" id="adm-vip-keys-list">
       <div class="adm-empty" style="padding:30px 0"><div class="spinner"></div></div>
     </div>
@@ -4063,6 +6419,67 @@ function loadAdminVIPKeys(){
     });
 }
 
+// ── Recherche d'un utilisateur par son identifiant (admin) ──
+// Passe par le serveur : les règles Firebase interdisent à un admin de lire
+// depuis le navigateur le nœud d'un autre utilisateur.
+async function admLookupUser(uid){
+  const inp = document.getElementById('adm-lookup-input');
+  const target = (uid || (inp && inp.value) || '').trim();
+  const out = document.getElementById('adm-lookup-result');
+  if(!out) return;
+  if(uid && inp) inp.value = uid;      // clic depuis une clé : on remplit le champ
+  if(!target){ out.innerHTML = '<div class="adm-lk-hint">Entre un identifiant utilisateur</div>'; return; }
+
+  out.innerHTML = '<div class="adm-lk-loading"><div class="spinner" style="width:18px;height:18px;border-width:2px"></div></div>';
+  try{
+    const token = await getAuthToken();
+    if(!token){ out.innerHTML = '<div class="adm-lk-err">Session expirée, reconnecte-toi</div>'; return; }
+    const res = await fetch('/api/admin/lookup', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ idToken: token, targetUid: target }),
+    });
+    const j = await res.json();
+    if(!j.ok){
+      const msgs = {
+        invalid_input:'Identifiant invalide',
+        invalid_token:'Session expirée, reconnecte-toi',
+        not_admin:'Accès refusé',
+        rate_limited:'Trop de recherches, patiente un peu',
+      };
+      out.innerHTML = '<div class="adm-lk-err">'+(msgs[j.error]||'Introuvable')+'</div>';
+      return;
+    }
+    out.innerHTML = admRenderLookup(j);
+  }catch(e){
+    console.error('[lookup]', e && e.message);
+    out.innerHTML = '<div class="adm-lk-err">Erreur réseau</div>';
+  }
+}
+
+function admRenderLookup(u){
+  const fmt = t => t ? new Date(t).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+  const vipActive = u.vip && u.vip.exp && u.vip.exp > Date.now();
+  const row = (label, val) => '<div class="adm-lk-row"><span>'+label+'</span><b>'+escHtml(String(val==null?'—':val))+'</b></div>';
+  return '<div class="adm-lk-card">'
+    + '<div class="adm-lk-head">'
+      + '<div class="adm-lk-name">'+escHtml(u.pseudo||'(sans pseudo)')+'</div>'
+      + (vipActive?'<span class="adm-lk-vip">VIP</span>':'<span class="adm-lk-novip">Non VIP</span>')
+    + '</div>'
+    + row('Email', u.email)
+    + row('Identifiant', u.uid)
+    + row('Dernière visite', fmt(u.lastSeen))
+    + (u.vip ? row('VIP expire le', fmt(u.vip.exp)) : '')
+    + (u.vip && u.vip.source ? row('Origine', u.vip.source === 'parrainage' ? 'Parrainage' : u.vip.source) : '')
+    + (u.referralStats ? row('Filleuls payants', (u.referralStats.paidCount||0)+' · '+(u.referralStats.monthsEarned||0)+' mois gagnés') : '')
+    + (u.referredBy ? '<div class="adm-lk-row"><span>Parrainé par</span><button class="avku-uid" onclick="admLookupUser(\''+escHtml(u.referredBy)+'\')">'+escHtml(u.referredBy)+'</button></div>' : '')
+    + (u.keys && u.keys.length
+        ? '<div class="adm-lk-keys"><div class="adm-lk-keys-t">Clés activées ('+u.keys.length+')</div>'
+          + u.keys.map(k => '<div class="adm-lk-key"><code>'+escHtml(k.key)+'</code><span>'+fmt(k.usedAt)+'</span></div>').join('')
+          + '</div>'
+        : '<div class="adm-lk-keys"><div class="adm-lk-keys-t">Aucune clé activée</div></div>')
+  + '</div>';
+}
+
 function renderVIPKeyRow(key, v){
   const created = v.createdAt ? new Date(v.createdAt).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
   const usedAt  = v.usedAt   ? new Date(v.usedAt).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : null;
@@ -4081,6 +6498,11 @@ function renderVIPKeyRow(key, v){
       <span>🕐 Créée : ${created}</span>
       ${usedAt?`<span>✅ Utilisée : ${usedAt}</span>`:''}
     </div>
+    ${v.activatedByUid?`<div class="adm-vip-key-user">
+      <span class="avku-label">Activée par</span>
+      <button class="avku-uid" onclick="admLookupUser('${escHtml(v.activatedByUid)}')" title="Voir la fiche de cet utilisateur">${escHtml(v.activatedByUid)}</button>
+      ${v.activatedByEmail?`<span class="avku-mail">${escHtml(v.activatedByEmail)}</span>`:''}
+    </div>`:''}
     <div class="adm-vip-key-actions">
       <button class="adm-vip-copy-btn" onclick="admCopyKey('${key}')">
         <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
@@ -4264,6 +6686,10 @@ const CHAT_MSG_TTL = 3 * 60 * 60 * 1000;
 // au lieu d'appels fetch() bruts vers l'API REST qui posaient problème) ───
 var _chatMsgsRef = null;   // référence Firebase actuellement écoutée
 var _chatBanRef  = null;
+var _chatConnRef = null;   // écoute .info/connected (état réel de la connexion)
+var _chatConnected = true;      // optimiste : on ne bloque pas l'UI sans preuve
+var _chatGraceTimer = null;
+var _chatOrphanTimer = null;
 
 function chatOpen(matchId){
   if(!matchId || !db) return;
@@ -4300,19 +6726,61 @@ function chatOpen(matchId){
   // bouton "Réessayer" au lieu de laisser tourner le spinner à l'infini.
   var openId = newId;
   var gotFirstResponse = false;
-  var chatTimeout = setTimeout(function(){
+
+  // Firebase expose son état de connexion réel via .info/connected. On s'en sert
+  // au lieu de deviner : si la connexion temps réel est coupée (WebSocket bloqué,
+  // réseau HS), on le dit clairement au lieu de laisser tourner un spinner.
+  // BUG CORRIGÉ : .info/connected émet "false" DE FAÇON SYNCHRONE dès qu'on s'y
+  // abonne, avant même la moindre tentative de connexion. On désactivait donc
+  // le champ de saisie à chaque ouverture du chat, et chez quelqu'un dont la
+  // connexion met quelques secondes, ça restait bloqué sur "Connexion
+  // impossible". On part optimiste et on n'accuse la connexion qu'après un
+  // délai de grâce.
+  if(_chatConnRef){ _chatConnRef.off(); }
+  _chatConnected = true;
+  _chatConnRef = db.ref('.info/connected');
+  _chatConnRef.on('value', function(snap){
+    var up = snap.val() === true;
+    if(up){
+      _chatConnected = true;
+      clearTimeout(_chatGraceTimer);
+      chatUpdateAuthUI();
+      if(!gotFirstResponse){
+        // .info/connected se déclenche de façon synchrone, AVANT que
+        // "var chatTimeout" plus bas ne soit affecté : on utilisait donc un
+        // timer orphelin jamais annulé. On le suit dans une variable dédiée.
+        clearTimeout(_chatOrphanTimer);
+        _chatOrphanTimer = setTimeout(showChatTimeout, 10000);
+      }
+    } else {
+      // Firebase rétablit très souvent le lien tout seul en une seconde ou deux
+      // (chargement de page, changement de réseau) : on attend avant de
+      // verrouiller l'interface.
+      clearTimeout(_chatGraceTimer);
+      _chatGraceTimer = setTimeout(function(){
+        _chatConnected = false;
+        chatUpdateAuthUI();
+      }, 6000);
+    }
+  });
+
+  function showChatTimeout(){
     if(gotFirstResponse || _chatMatchId !== openId) return;
     var wrapEl = document.getElementById('chat-messages');
-    if(wrapEl){
-      wrapEl.innerHTML = '<div class="chat-empty">Le chat met du temps à répondre<br>'
-        + '<button onclick="chatOpen(\''+openId+'\')" style="margin-top:8px;background:var(--s2);border:1px solid var(--line2);color:var(--t1);border-radius:20px;padding:6px 16px;font-size:12px;font-weight:700;cursor:pointer">Réessayer</button></div>';
-    }
-  }, 8000);
+    if(!wrapEl) return;
+    var msg = _chatConnected
+      ? 'Le chat met du temps à répondre'
+      : 'Connexion au chat impossible<br><span style="font-size:11px;opacity:.7">Vérifie ta connexion ou désactive un éventuel bloqueur</span>';
+    wrapEl.innerHTML = '<div class="chat-empty">' + msg + '<br>'
+      + '<button onclick="chatOpen(\''+openId+'\')" style="margin-top:8px;background:var(--s2);border:1px solid var(--line2);color:var(--t1);border-radius:20px;padding:6px 16px;font-size:12px;font-weight:700;cursor:pointer">Réessayer</button></div>';
+  }
+  var chatTimeout = setTimeout(showChatTimeout, 10000);
 
   _chatMsgsRef = db.ref('chats/'+newId+'/messages').limitToLast(CHAT_MAX_MSGS);
   _chatMsgsRef.on('value', function(snap){
     gotFirstResponse = true;
     clearTimeout(chatTimeout);
+    clearTimeout(_chatOrphanTimer);
     var data = snap.val();
     var msgs = [];
     if(data && typeof data === 'object'){
@@ -4321,7 +6789,21 @@ function chatOpen(matchId){
       });
       msgs.sort(function(a,b){ return (a.ts||0)-(b.ts||0); });
     }
-    chatRender(msgs);
+    // Si le rendu lève une exception (message malformé, champ inattendu…), le
+    // spinner restait affiché pour toujours et le chat paraissait « bloqué en
+    // chargement » alors que les données étaient bien arrivées. On isole donc
+    // le rendu et on affiche une vraie erreur en cas de pépin.
+    try{
+      chatRender(msgs);
+    }catch(renderErr){
+      console.error('[chat] erreur de rendu:', renderErr, msgs && msgs.length);
+      var w = document.getElementById('chat-messages');
+      if(w) w.innerHTML = '<div class="chat-empty">Impossible d\'afficher les messages<br>'
+        + '<button onclick="chatOpen(\''+openId+'\')" style="margin-top:8px;background:var(--s2);border:1px solid var(--line2);color:var(--t1);border-radius:20px;padding:6px 16px;font-size:12px;font-weight:700;cursor:pointer">Réessayer</button></div>';
+    }
+    // Pas de purge côté client : elle est faite par le serveur (purgeChats),
+    // seul à pouvoir supprimer des messages. La déclencher ici rechargerait
+    // 200 messages à chaque rafraîchissement pour rien.
   }, function(err){
     gotFirstResponse = true;
     clearTimeout(chatTimeout);
@@ -4337,6 +6819,9 @@ function chatOpen(matchId){
 function chatClose(){
   if(_chatMsgsRef){ _chatMsgsRef.off(); _chatMsgsRef = null; }
   if(_chatBanRef){ _chatBanRef.off(); _chatBanRef = null; }
+  if(_chatConnRef){ _chatConnRef.off(); _chatConnRef = null; }
+  clearTimeout(_chatGraceTimer);
+  clearTimeout(_chatOrphanTimer);
   _chatMatchId  = null;
   _chatKnownIds = new Set();
   var sec = document.getElementById('chat-section');
@@ -4358,6 +6843,16 @@ function chatUpdateAuthUI(){
   } else {
     li.style.display='flex'; lh.style.display='none';
   }
+  // Indication visuelle quand la connexion temps réel est coupée : avant, le
+  // champ restait actif et l'envoi échouait sans explication.
+  var inp = document.getElementById('chat-input');
+  var sbtn = document.getElementById('chat-send-btn');
+  var offline = currentUser && !_chatBanned && !_chatConnected;
+  if(inp){
+    inp.disabled = !!offline;
+    inp.placeholder = offline ? 'Reconnexion au chat…' : 'Écrire un message…';
+  }
+  if(sbtn) sbtn.disabled = !!offline;
 }
 
 var _chatReply = null;
@@ -4408,9 +6903,16 @@ function _chatMsgHtml(msg){
   var adminBadge = msg.admin
     ? ' <span class="chat-admin-badge"><svg viewBox="0 0 24 24" fill="currentColor" width="10" height="10"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg> Admin</span>'
     : '';
+  var nameColorClass = (msg.nameColor >= 1 && msg.nameColor <= 6) ? ' name-shine name-shine-'+msg.nameColor : '';
+  // Badge VIP visible par tout le monde. Le champ "vip" est validé côté règles
+  // Firebase contre la date d'expiration réelle : impossible de se l'attribuer
+  // depuis la console du navigateur.
+  var vipBadge = (msg.vip && !msg.admin)
+    ? ' <span class="chat-vip-badge"><svg viewBox="0 0 24 24" fill="currentColor" width="9" height="9"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg> VIP</span>'
+    : '';
   var pseudoHtml = msg.admin
     ? '<div class="chat-msg-pseudo chat-msg-pseudo-admin">'+pseudo+adminBadge+'</div>'
-    : '<div class="chat-msg-pseudo">'+pseudo+'</div>';
+    : '<div class="chat-msg-pseudo"><span class="'+('chat-pseudo-name'+nameColorClass)+'">'+pseudo+'</span>'+vipBadge+'</div>';
   var banBtn = (isAdmin() && !isMe && !msg.admin)
     ? '<button class="chat-ban-btn" onclick="chatBanUser(\''+msg.uid+'\',\''+safePseudo+'\')">\uD83D\uDEAB</button>'
     : '';
@@ -4513,6 +7015,10 @@ function _chatSendActual(){
   if(!isAdmin()) chatStartCooldownUI();
   const pseudo = (currentUser.displayName || currentUser.email.split('@')[0] || 'Okin').slice(0,24);
   const msg = {uid:currentUser.uid, pseudo:pseudo, text:text, ts:now, admin:isAdmin()};
+  if(isVIP()){
+    msg.vip = true;                                   // badge VIP visible par tous
+    if(myNameColor) msg.nameColor = myNameColor;      // couleur choisie dans le profil
+  }
   if(_chatReply) msg.replyTo = {pseudo:_chatReply.pseudo, text:_chatReply.text.slice(0,100)};
   const btn = document.getElementById('chat-send-btn');
   if(btn) btn.disabled = true;
@@ -4525,8 +7031,19 @@ function _chatSendActual(){
       if(wrap) wrap.scrollTop = wrap.scrollHeight;
       chatCleanOld();
     })
-    .catch(function(){
-      toast('Erreur envoi');
+    .catch(function(err){
+      // L'erreur était totalement avalée : impossible de savoir si c'était un
+      // refus des règles, une coupure réseau ou un bannissement. On la logue et
+      // on affiche un message utile selon le cas.
+      var code = (err && (err.code || err.message) || '').toString();
+      console.error('[chat] envoi refusé:', code, err);
+      if(/permission|denied/i.test(code)){
+        toast('⛔ Envoi refusé — règles Firebase');
+      } else if(/network|disconnect|unavailable/i.test(code)){
+        toast('📡 Connexion perdue, réessaie');
+      } else {
+        toast('Erreur envoi');
+      }
       if(btn) btn.disabled = false;
       _chatLastSend = 0;
       chatStopCooldownUI();
@@ -4610,6 +7127,10 @@ function chatDeleteMsg(matchId, msgId){
 
 function chatCleanOld(){
   if(!db || !_chatMatchId) return;
+  // Supprimer d'anciens messages est réservé aux admins par les règles Firebase.
+  // Pour tous les autres, cette fonction déclenchait à CHAQUE envoi une lecture
+  // de 200 messages suivie d'une écriture refusée — inutile et coûteux.
+  if(!isAdmin()) return;
   const cutoff = Date.now() - CHAT_MSG_TTL;
   // Lire TOUS les messages pour trouver ceux plus vieux que 3h
   db.ref('chats/'+_chatMatchId+'/messages').limitToFirst(200)
@@ -4641,6 +7162,19 @@ loadMatches();
 initFirebase();
 // La validité VIP est désormais vérifiée en continu via attachVIPListener (live), plus besoin de polling ici.
 loadTvStreams();
+startClockTicker(); // chronos live à la seconde
+
+// dlive : première sync 4s après le chargement (laisse le temps aux matchs
+// et chaînes de se charger d'abord), puis toutes les 2h — le mapping validé
+// par l'admin (Firebase) reste valable même si la sync auto rate un cycle.
+setTimeout(()=>syncDlive().catch(e=>console.error('[dlive] sync initiale échouée', e.message)), 4000);
+setInterval(()=>{ if(document.visibilityState==='visible') syncDlive().catch(()=>{}); }, 2 * 60 * 60 * 1000);
+
+// FLS (Football Live Stream API) : la sync client ne lit que le cache du
+// serveur, elle ne consomme donc AUCUN appel RapidAPI — on peut la lancer
+// souvent. C'est le serveur qui décide seul quand rafraîchir réellement, et
+// seule une lecture réelle déclenche un appel /link.
+startFlsAutoSync();
 
 
 // ═══════════════════════════════════════════════════════
@@ -4650,8 +7184,40 @@ loadTvStreams();
 // Enregistrer le Service Worker
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
+    // ── Mise à jour du Service Worker ──
+    // BUG CORRIGÉ : on rechargeait dès l'état "installed", donc AVANT que le
+    // nouveau Service Worker ait pris le contrôle. L'ancien, toujours actif,
+    // resservait sa version en cache après le rechargement — d'où l'impression
+    // que les changements s'appliquaient puis disparaissaient.
+    // La bonne pratique : attendre l'événement "controllerchange", qui signale
+    // que le NOUVEAU Service Worker pilote réellement la page.
+    let _swReloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if(_swReloading) return;       // garde-fou anti-boucle de rechargement
+      _swReloading = true;
+      console.log('[SW] nouvelle version active — rechargement');
+      location.reload();
+    });
+
     navigator.serviceWorker.register('/sw.js')
-      .then(reg => console.log('SW enregistré:', reg.scope))
+      .then(reg => {
+        console.log('SW enregistré:', reg.scope);
+        reg.update().catch(()=>{});
+        setInterval(() => reg.update().catch(()=>{}), 30 * 60 * 1000);
+        reg.addEventListener('updatefound', () => {
+          const nw = reg.installing;
+          if(!nw) return;
+          nw.addEventListener('statechange', () => {
+            if(nw.state === 'installed' && navigator.serviceWorker.controller){
+              // On signale seulement : le rechargement est déclenché par
+              // controllerchange, une fois la bascule réellement effectuée
+              // (sw.js appelle skipWaiting() puis clients.claim()).
+              console.log('[SW] nouvelle version prête, bascule en cours');
+              try{ toast('🔄 Mise à jour…'); }catch(e){}
+            }
+          });
+        });
+      })
       .catch(err => console.log('SW erreur:', err));
   });
 }
@@ -4674,9 +7240,34 @@ if(isStandalone || pwaDismissed) {
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
   deferredPrompt = e;
-  // Stocker le prompt pour plus tard (déclenché depuis À propos)
-  // Ne pas afficher automatiquement
+  pwaCanInstall = true;
+  // Rafraîchit le profil pour faire apparaître le bouton "Installer l'application"
+  if(typeof page !== 'undefined' && page === 'account') renderContent();
 });
+
+// L'app a été installée → on masque l'entrée d'installation
+window.addEventListener('appinstalled', () => {
+  deferredPrompt = null;
+  pwaCanInstall = false;
+  toast('✅ Okin Stream installé !');
+  if(typeof page !== 'undefined' && page === 'account') renderContent();
+});
+
+// Déclenché par le bouton "Installer l'application" du profil
+async function installPWA(){
+  if(deferredPrompt){
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    pwaCanInstall = false;
+    if(outcome === 'accepted') toast('Installation en cours…');
+    if(page === 'account') renderContent();
+  } else if(/iphone|ipad|ipod/i.test(navigator.userAgent)){
+    showIOSInstallGuide(); // iOS ne fournit aucun prompt natif
+  } else {
+    toast('Utilise le menu du navigateur → « Installer l\'application »');
+  }
+}
 
 if(pwaInstallBtn) {
   pwaInstallBtn.addEventListener('click', async () => {

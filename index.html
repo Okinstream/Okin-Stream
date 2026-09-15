@@ -26,20 +26,11 @@
               https://*.lequipe.fr
               https://*.rmcsport.bfmtv.com
               https://*.francetvinfo.fr;
-  connect-src 'self'                                                                                                                                                  https://*.firebaseio.com                                                                                                                                https://firebaseinstallations.googleapis.com
-              https://okin-stream-765b2-default-rtdb.firebaseio.com
-              wss://okin-stream-765b2-default-rtdb.firebaseio.com
-              https://api.rss2json.com
-              https://corsproxy.io
-              https://api.allorigins.win
-              https://corsproxy.org
-              https://www.googleapis.com
-              https://crests.football-data.org                                                                                      https://identitytoolkit.googleapis.com
-              https://securetoken.googleapis.com
-              https://accounts.google.com
-              https://oauth2.googleapis.com;
+  connect-src 'self' https://*.firebaseio.com wss://*.firebaseio.com https://*.firebasedatabase.app wss://*.firebasedatabase.app https://firebaseinstallations.googleapis.com https://www.googleapis.com https://crests.football-data.org https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://accounts.google.com https://oauth2.googleapis.com;
   media-src   'self' blob: https: http:;
-  frame-src   https://www.youtube.com https://www.youtube-nocookie.com
+  manifest-src 'self';
+  worker-src  'self';
+  frame-src   https://www.youtube.com https://www.youtube-nocookie.com https://dlive.sx
               https://accounts.google.com
               https://okin-stream-765b2.firebaseapp.com;
   object-src  'none';
@@ -184,6 +175,75 @@
         <div id="yt-results"></div>
       </div>
     </div><!-- /vp-panel-top -->
+
+    <!-- Bascule Détails / Chat — visible uniquement pour un match de foot déjà commencé -->
+    <div id="stream-tabs" class="stream-tabs" style="display:none">
+      <button class="stream-tab on" id="tab-btn-details" onclick="switchStreamTab('details')">Détails</button>
+      <button class="stream-tab" id="tab-btn-chat" onclick="switchStreamTab('chat')">Chat</button>
+    </div>
+
+    <!-- DÉTAILS — compos, terrain 2D, blessures, changements. Source principale :
+         FlashScore (scraper) — bascule automatique sur l'API backup si indispo. -->
+    <div id="details-section" class="details-section" style="display:none">
+      <div id="det-source-note" class="det-source-note" style="display:none"></div>
+
+      <!-- Sous-navigation interne à Détails (comme sur FlashScore) -->
+      <div class="det-subtabs">
+        <button class="det-subtab on" id="det-tab-compos" onclick="switchDetTab('compos')">Compos</button>
+        <button class="det-subtab" id="det-tab-stats" onclick="switchDetTab('stats')">Stats</button>
+        <button class="det-subtab" id="det-tab-players" onclick="switchDetTab('players')">Stats joueurs</button>
+      </div>
+
+      <div id="lu-loading" class="lu-loading" style="display:none"><div class="spinner"></div></div>
+
+      <!-- PANNEAU COMPOS -->
+      <div id="det-panel-compos" class="det-panel">
+        <div class="lu-head">
+          <span class="lu-head-title">Compositions</span>
+          <span class="lu-formations" id="lu-formations"></span>
+        </div>
+        <div id="lu-pitch-wrap" class="lu-pitch-wrap">
+          <div id="lu-pitch" class="lu-pitch">
+            <div class="lu-pitch-lines"></div>
+          </div>
+        </div>
+        <div id="lu-injuries" class="lu-injuries"></div>
+        <div id="lu-events" class="lu-events"></div>
+        <div id="lu-benches" class="lu-benches"></div>
+      </div>
+
+      <!-- PANNEAU STATS DU MATCH -->
+      <div id="det-panel-stats" class="det-panel" style="display:none">
+        <div class="lu-head"><span class="lu-head-title">Statistiques du match</span></div>
+        <div id="det-stats-list" class="det-stats-list"></div>
+      </div>
+
+      <!-- PANNEAU STATS JOUEURS -->
+      <div id="det-panel-players" class="det-panel" style="display:none">
+        <div class="lu-head"><span class="lu-head-title">Top stats joueurs</span></div>
+        <div class="det-players-subtabs" id="det-players-subtabs">
+          <button class="det-players-subtab on" data-cat="rating" onclick="switchPlayersCat('rating')">Rating</button>
+          <button class="det-players-subtab" data-cat="shots" onclick="switchPlayersCat('shots')">Tirs</button>
+          <button class="det-players-subtab" data-cat="goals" onclick="switchPlayersCat('goals')">Buts</button>
+          <button class="det-players-subtab" data-cat="passes" onclick="switchPlayersCat('passes')">Passes</button>
+          <button class="det-players-subtab" data-cat="tackles" onclick="switchPlayersCat('tackles')">Défense</button>
+        </div>
+        <div id="det-players-list" class="det-players-list"></div>
+      </div>
+    </div>
+
+    <!-- Fiche joueur (bio) — ouverte au clic sur un joueur du terrain -->
+    <div id="player-bio-ov" class="player-bio-ov" style="display:none" onclick="if(event.target===this)closePlayerBio()">
+      <div class="player-bio-card">
+        <button class="player-bio-close" onclick="closePlayerBio()">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+        <div id="player-bio-photo" class="player-bio-photo"></div>
+        <div id="player-bio-name" class="player-bio-name">—</div>
+        <div id="player-bio-pos" class="player-bio-pos">—</div>
+        <div id="player-bio-facts" class="player-bio-facts"></div>
+      </div>
+    </div>
 
     <!-- CHAT — actif uniquement pendant un match en direct ou une chaîne TV active.
          Prend tout l'espace restant (flex:1), largeur 100%, défilement interne. -->
@@ -450,6 +510,7 @@
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
 <script src="app.js"></script>
 <!-- OVERLAY LÉGAL -->
 <div id="legal-ov" class="legal-ov">
@@ -500,87 +561,89 @@
     <!-- Hero -->
     <div id="vip-offers-block">
       <div class="vip-hero">
+        <div class="vip-hero-aura"></div>
         <div class="vip-hero-icon">
           <div class="vip-hero-ring"></div>
           <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg>
         </div>
         <div class="vip-hero-title">Okin Stream VIP</div>
-        <div class="vip-hero-sub">Une expérience sans compromis</div>
+        <div class="vip-hero-sub">Le foot sans pub, sans limite</div>
+        <div class="vip-hero-price-tag"><span>5€</span> par an — moins de 0,42€/mois</div>
       </div>
 
-      <!-- Avantages -->
-      <div class="vip-perks-grid">
-        <div class="vip-perk-cell">
-          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></div>
-          <div class="vip-perk-label">Sans pub</div>
-        </div>
-        <div class="vip-perk-cell">
-          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
-          <div class="vip-perk-label">Streams HD</div>
-        </div>
-        <div class="vip-perk-cell">
-          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/></svg></div>
-          <div class="vip-perk-label">Multi-stream</div>
-        </div>
-        <div class="vip-perk-cell">
-          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
-          <div class="vip-perk-label">Alertes</div>
-        </div>
-      </div>
-
-      <!-- Plans -->
-      <div class="vip-plans">
-
-        <!-- 5€ — DISPONIBLE -->
-        <div class="vip-plan-card vip-plan-active">
-          <div class="vip-plan-border"></div>
-          <div class="vip-plan-top">
-            <div class="vip-plan-name">Essentiel</div>
-            <div class="vip-plan-avail">Disponible</div>
+      <!-- Avantages détaillés -->
+      <div class="vip-perks-list">
+        <div class="vip-perk-row">
+          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></div>
+          <div class="vip-perk-txt">
+            <div class="vip-perk-t">Zéro publicité</div>
+            <div class="vip-perk-d">Plus d'attente avant les streams, accès direct au match</div>
           </div>
+        </div>
+        <div class="vip-perk-row">
+          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+          <div class="vip-perk-txt">
+            <div class="vip-perk-t">Streams HD prioritaires</div>
+            <div class="vip-perk-d">Les meilleures sources, en qualité maximale</div>
+          </div>
+        </div>
+        <div class="vip-perk-row">
+          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/></svg></div>
+          <div class="vip-perk-txt">
+            <div class="vip-perk-t">Multi-stream</div>
+            <div class="vip-perk-d">Jusqu'à 4 matchs en simultané sur un seul écran</div>
+          </div>
+        </div>
+        <div class="vip-perk-row">
+          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg></div>
+          <div class="vip-perk-txt">
+            <div class="vip-perk-t">Pseudo & photo personnalisés</div>
+            <div class="vip-perk-d">6 couleurs animées dans le chat + ta propre photo de profil</div>
+          </div>
+        </div>
+        <div class="vip-perk-row">
+          <div class="vip-perk-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
+          <div class="vip-perk-txt">
+            <div class="vip-perk-t">Alertes de match</div>
+            <div class="vip-perk-d">Sois prévenu au coup d'envoi de tes équipes favorites</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Plan unique -->
+      <div class="vip-plans">
+        <div class="vip-plan-card vip-plan-active">
+          <div class="vip-plan-ribbon">Offre unique</div>
           <div class="vip-plan-price-row">
             <span class="vip-plan-price">5€</span>
-            <span class="vip-plan-period">/mois</span>
+            <span class="vip-plan-period">/an</span>
           </div>
-          <div class="vip-plan-desc">Toutes les fonctionnalités VIP · Sans engagement</div>
+          <div class="vip-plan-desc">Paiement unique · Valable 12 mois · Sans reconduction automatique</div>
           <div class="vip-plan-btn-wrap">
-            <button class="vip-plan-paypal-btn" onclick="startPayment()">
+            <button class="vip-plan-paypal-btn" onclick="startPaymentAnnual()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M19.5 6.5C19.5 9.54 17.29 12 14.25 12H11.5L10.5 17H7.5L9.5 6H14.75C17.37 6 19.5 6.5 19.5 6.5Z" fill="#009cde"/>
                 <path d="M20.5 4C20.5 4 20 7.5 17 9.5C14.5 11 11.5 11 11.5 11L10.5 17H7.5L9.5 6H15C18.04 6 20.5 4 20.5 4Z" fill="#003087"/>
                 <path d="M17.5 8C17.5 11.04 15.29 13.5 12.25 13.5H9.5L8.5 18.5H5.5L7.5 7.5H12.75C15.37 7.5 17.5 8 17.5 8Z" fill="#009cde"/>
               </svg>
-              Payer avec PayPal — 5€/mois
+              Payer avec PayPal
             </button>
           </div>
-        </div>
-
-        <!-- 20€ / 6 MOIS — DISPONIBLE -->
-        <div class="vip-plan-card vip-plan-active">
-          <div class="vip-plan-border"></div>
-          <div class="vip-plan-top">
-            <div class="vip-plan-name">Longue durée</div>
-            <div class="vip-plan-avail">Disponible</div>
-          </div>
-          <div class="vip-plan-price-row">
-            <span class="vip-plan-price">20€</span>
-            <span class="vip-plan-period">/6 mois</span>
-          </div>
-          <div class="vip-plan-desc">Toutes les fonctionnalités VIP · Paiement unique · Valable 6 mois</div>
-          <div class="vip-plan-btn-wrap">
-            <button class="vip-plan-paypal-btn" onclick="startPaymentLifetime()">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M19.5 6.5C19.5 9.54 17.29 12 14.25 12H11.5L10.5 17H7.5L9.5 6H14.75C17.37 6 19.5 6.5 19.5 6.5Z" fill="#009cde"/>
-                <path d="M20.5 4C20.5 4 20 7.5 17 9.5C14.5 11 11.5 11 11.5 11L10.5 17H7.5L9.5 6H15C18.04 6 20.5 4 20.5 4Z" fill="#003087"/>
-                <path d="M17.5 8C17.5 11.04 15.29 13.5 12.25 13.5H9.5L8.5 18.5H5.5L7.5 7.5H12.75C15.37 7.5 17.5 8 17.5 8Z" fill="#009cde"/>
-              </svg>
-              Payer avec PayPal — 20€ / 6 mois
-            </button>
+          <div class="vip-plan-reassure">
+            <span>🔒 Paiement sécurisé PayPal</span>
+            <span>✉️ Clé envoyée par email</span>
           </div>
         </div>
+      </div>
 
-
-      </div><!-- /vip-plans -->
+      <!-- Parrainage : alternative gratuite -->
+      <div class="vip-alt-card">
+        <div class="vip-alt-ico">🎁</div>
+        <div class="vip-alt-txt">
+          <div class="vip-alt-t">Ou obtiens-le gratuitement</div>
+          <div class="vip-alt-d">Parraine 3 amis qui prennent le VIP et reçois 3 mois offerts</div>
+        </div>
+      </div>
     </div><!-- /vip-offers-block -->
 
     <!-- Clé VIP -->
@@ -692,6 +755,42 @@
     </div>
   </div>
 </div>
+
+    <!-- SIGNALEMENT : bug / faille / suggestion -->
+    <div id="feedback-ov" class="fb-ov" style="display:none" onclick="if(event.target===this)closeFeedbackModal()">
+      <div class="fb-card">
+        <div class="fb-head">
+          <div class="fb-head-title">Signaler / Suggérer</div>
+          <button class="fb-close" onclick="closeFeedbackModal()">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
+
+        <div id="fb-priority-note" class="fb-prio" style="display:none">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M5 16L3 6l5.5 4L12 4l3.5 6L21 6l-2 10H5zm2 2h10v2H7v-2z"/></svg>
+          <span>En tant que membre VIP, ta demande est traitée en priorité</span>
+        </div>
+
+        <div class="fb-types">
+          <button class="fb-type-btn on" data-t="bug" onclick="setFeedbackType('bug')">🐞 Bug</button>
+          <button class="fb-type-btn" data-t="security" onclick="setFeedbackType('security')">🔐 Faille</button>
+          <button class="fb-type-btn" data-t="idea" onclick="setFeedbackType('idea')">💡 Idée</button>
+        </div>
+
+        <label class="fb-label">Titre</label>
+        <input id="fb-title" class="fb-input" type="text" maxlength="100" placeholder="Ex : le chat ne charge pas sur mobile" autocomplete="off">
+
+        <label class="fb-label">Description</label>
+        <textarea id="fb-text" class="fb-textarea" maxlength="2000" rows="5" placeholder="Que s'est-il passé ? Sur quelle page ? Comment le reproduire ?"></textarea>
+
+        <label class="fb-label">Captures d'écran <span class="fb-label-hint">(facultatif, 3 max)</span></label>
+        <div id="fb-shots" class="fb-shots"></div>
+        <input id="fb-file-input" type="file" accept="image/*" multiple style="display:none" onchange="fbHandleFiles(event)">
+
+        <button id="fb-submit-btn" class="fb-submit" onclick="submitFeedback()">Envoyer</button>
+        <div class="fb-foot">Les signalements de failles de sécurité sont traités en urgence.</div>
+      </div>
+    </div>
 
 </body>
 </html>

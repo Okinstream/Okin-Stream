@@ -1,9 +1,12 @@
-const CACHE_NAME = 'okin-v2'; // ⚠️ à incrémenter (v3, v4...) à CHAQUE déploiement
+const CACHE_NAME = 'okin-v7'; // ⚠️ à incrémenter (v4, v5...) à CHAQUE déploiement
 const STATIC = [
   '/',
   '/index.html',
   '/style.css',
   '/app.js',
+  '/manifest.json',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
 ];
 
 // Installation — mise en cache des fichiers statiques
