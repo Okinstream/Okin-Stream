@@ -1,0 +1,6 @@
+User-agent: *
+Disallow: /piece-2/
+Disallow: /fragments/
+
+# il n'y a rien ici.
+# il n'y a jamais rien eu ici.

@@ -1,0 +1,9 @@
+/** FNV-1a 32 bits. Suffisant pour ne pas laisser un mot en clair dans le bundle. */
+export function fnv1a(input: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
